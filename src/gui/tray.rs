@@ -1,5 +1,6 @@
 //! The macOS integration outside iced: the Dock icon, the menu-bar (tray)
-//! icon with Show application / Disconnect / Exit, activating the app,
+//! icon with Show application / Disconnect / Uninstall Helper / Exit,
+//! activating the app,
 //! and locking the window's size (no zoom).
 //!
 //! All of these need the AppKit event loop to be running, so they are set up when
@@ -14,20 +15,22 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::app::Message;
 
-const DOCK_ICON_PNG: &[u8] = include_bytes!("../../assets/icons/vpn-icon-macos-1024.png");
-/// Menu-bar icons, drawn on the menu bar's 22 pt canvas. While no tunnel
-/// is up the icon is a template, so macOS picks its colour; while one is
-/// connected it carries a green dot, so the outline is drawn white for a
-/// dark menu bar and black for a light one.
-const MENU_BAR_ICON_SVG: &[u8] = include_bytes!("../../assets/icons/vpn-trayTemplate.svg");
-const MENU_BAR_ACTIVE_DARK_SVG: &[u8] = include_bytes!("../../assets/icons/vpn-tray-active-dark.svg");
-const MENU_BAR_ACTIVE_LIGHT_SVG: &[u8] = include_bytes!("../../assets/icons/vpn-tray-active-light.svg");
+const DOCK_ICON_PNG: &[u8] = include_bytes!("../../assets/icons/1-AppIcon-macOS/AppIcon-1024.png");
+/// Menu-bar icons (assets/icons/3-MenuBar), drawn on the menu bar's 22 pt
+/// canvas. While no tunnel is up ("off") the icon is a template, so macOS
+/// picks its colour; while one is connected ("on") it carries a green dot
+/// (#34C759), so the outline is drawn white for a dark menu bar and black
+/// for a light one.
+const MENU_BAR_ICON_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-off-template.svg");
+const MENU_BAR_ACTIVE_DARK_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-on-dark.svg");
+const MENU_BAR_ACTIVE_LIGHT_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-on-light.svg");
 /// The icons are drawn at 2× (44 px, for Retina); tray-icon shows them
 /// 22 pt tall.
 const MENU_BAR_ICON_SCALE: f32 = 2.0;
 
 const SHOW_ID: &str = "show";
 const DISCONNECT_ID: &str = "disconnect";
+const UNINSTALL_HELPER_ID: &str = "uninstall-helper";
 const EXIT_ID: &str = "exit";
 
 /// Keeps the menu-bar icon alive; dropping it removes the icon.
@@ -48,9 +51,10 @@ impl Tray {
     pub fn new() -> Result<Tray, String> {
         let show = MenuItem::with_id(SHOW_ID, "Show application", true, None);
         let disconnect = MenuItem::with_id(DISCONNECT_ID, "Disconnect", false, None);
+        let uninstall = MenuItem::with_id(UNINSTALL_HELPER_ID, "Uninstall Helper…", true, None);
         let exit = MenuItem::with_id(EXIT_ID, "Exit", true, None);
         let menu = Menu::new();
-        menu.append_items(&[&show, &disconnect, &PredefinedMenuItem::separator(), &exit])
+        menu.append_items(&[&show, &disconnect, &PredefinedMenuItem::separator(), &uninstall, &exit])
             .map_err(|e| format!("cannot build the menu-bar menu: {e}"))?;
 
         let icon = TrayIconBuilder::new()
@@ -64,11 +68,11 @@ impl Tray {
 
     /// "Disconnect" is only offered while a tunnel is up or coming up
     /// (`can_disconnect`); the icon shows the green dot once it is
-    /// connected. Called after every message, so a switch between light
-    /// and dark mode shows up within a second.
-    pub fn set_status(&self, can_disconnect: bool, connected: bool) {
+    /// connected, outlined to suit a `dark` or light menu bar. Called after
+    /// every message, including appearance changes.
+    pub fn set_status(&self, can_disconnect: bool, connected: bool, dark: bool) {
         self.disconnect.set_enabled(can_disconnect);
-        let look = if connected { Look::Connected { dark: menu_bar_is_dark() } } else { Look::Idle };
+        let look = if connected { Look::Connected { dark } } else { Look::Idle };
         if look == self.look.get() {
             return;
         }
@@ -89,17 +93,6 @@ impl Tray {
     }
 }
 
-/// Whether the menu bar is drawn in dark mode.
-fn menu_bar_is_dark() -> bool {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
-
-    let Some(main_thread) = MainThreadMarker::new() else {
-        return false;
-    };
-    NSApplication::sharedApplication(main_thread).effectiveAppearance().name().to_string().contains("Dark")
-}
-
 /// Menu clicks, as app messages. The menu reports them on a global channel;
 /// a thread waits on it and forwards each one.
 pub fn events() -> Subscription<Message> {
@@ -111,6 +104,7 @@ pub fn events() -> Subscription<Message> {
                     let message = match event.id.0.as_str() {
                         SHOW_ID => Message::ShowWindow,
                         DISCONNECT_ID => Message::Disconnect,
+                        UNINSTALL_HELPER_ID => Message::UninstallHelper,
                         EXIT_ID => Message::CloseRequested,
                         _ => continue,
                     };
@@ -185,6 +179,85 @@ pub fn activate_app() -> bool {
     let app = NSApplication::sharedApplication(main_thread);
     app.activate();
     app.isActive()
+}
+
+/// The accent colour picked in System Settings → Appearance, or None for
+/// Multicolor, where macOS leaves the colour to each app.
+///
+/// `controlAccentColor` is a dynamic colour with a brighter variant for
+/// dark mode, so it is resolved in the app's current appearance, as Apple
+/// recommends for colours used outside of view drawing.
+pub fn system_accent() -> Option<iced::Color> {
+    use std::cell::Cell;
+
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSColor, NSColorSpace};
+    use objc2_foundation::{NSString, NSUserDefaults};
+
+    // Multicolor is the absence of the setting.
+    let key = NSString::from_str("AppleAccentColor");
+    NSUserDefaults::standardUserDefaults().objectForKey(&key)?;
+
+    let resolved = Cell::new(None);
+    let resolve = || {
+        resolved.set(NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace()).map(|c| {
+            iced::Color::from_rgb(c.redComponent() as f32, c.greenComponent() as f32, c.blueComponent() as f32)
+        }));
+    };
+    match MainThreadMarker::new() {
+        Some(main_thread) => NSApplication::sharedApplication(main_thread)
+            .effectiveAppearance()
+            .performAsCurrentDrawingAppearance(&RcBlock::new(resolve)),
+        None => resolve(),
+    }
+    resolved.get()
+}
+
+/// Accent colour changes in System Settings, as app messages. AppKit posts
+/// NSSystemColorsDidChangeNotification when they happen (the documented
+/// signal, also the one WebKit and Chromium listen for), so nothing is
+/// polled.
+pub fn accent_changes() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(4, async |mut output| {
+            use iced::futures::StreamExt;
+
+            let mut changes = observe_system_colors();
+            while changes.next().await.is_some() {
+                if output.send(Message::AccentChanged).await.is_err() {
+                    break; // The app is gone.
+                }
+            }
+        })
+    })
+}
+
+/// Registers for NSSystemColorsDidChangeNotification; each one arrives as a
+/// unit on the returned channel. The observer stays for the app's lifetime.
+fn observe_system_colors() -> iced::futures::channel::mpsc::UnboundedReceiver<()> {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::NSSystemColorsDidChangeNotification;
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        let _ = sender.unbounded_send(());
+    });
+    // SAFETY: no object filter; with no queue the block runs on the posting
+    // thread, and it only sends on a thread-safe channel.
+    let observer = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSSystemColorsDidChangeNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(observer);
+    receiver
 }
 
 /// Bounces the Dock icon once: the usual hint when an app could not take

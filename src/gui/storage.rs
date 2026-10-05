@@ -1,12 +1,7 @@
 //! Profiles and the connection history, kept in `~/.wg-gui`.
-//!
-//! The GUI runs under sudo, so "~" means the home of the user who ran sudo
-//! (SUDO_USER), and everything written there is handed back to that user.
 
-use std::ffi::{CStr, CString, c_char, c_int};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -18,25 +13,6 @@ const DIR_NAME: &str = ".wg-gui";
 const LOG_NAME: &str = "connections.log";
 const MAX_NAME_LEN: usize = 64;
 
-#[repr(C)]
-struct Passwd {
-    pw_name: *const c_char,
-    pw_passwd: *const c_char,
-    pw_uid: u32,
-    pw_gid: u32,
-    pw_change: i64,
-    pw_class: *const c_char,
-    pw_gecos: *const c_char,
-    pw_dir: *const c_char,
-    pw_shell: *const c_char,
-    pw_expire: i64,
-}
-
-unsafe extern "C" {
-    fn getpwnam(name: *const c_char) -> *const Passwd;
-    fn chown(path: *const c_char, owner: u32, group: u32) -> c_int;
-}
-
 #[derive(Debug, Clone)]
 pub struct Profile {
     /// The file name without ".conf"; shown as the profile name.
@@ -46,25 +22,22 @@ pub struct Profile {
     pub summary: Result<Summary, String>,
 }
 
-/// Where profiles live, and who should own the files.
+/// Where profiles live.
 #[derive(Debug, Clone)]
 pub struct Store {
     pub dir: PathBuf,
-    /// (uid, gid) of the sudo caller; None when not running under sudo.
-    owner: Option<(u32, u32)>,
 }
 
 impl Store {
-    /// Finds and creates `~/.wg-gui` for the invoking user.
+    /// Finds and creates `~/.wg-gui`.
     pub fn open() -> Result<Store, String> {
-        let (home, owner) = invoking_user_home()?;
-        let store = Store { dir: home.join(DIR_NAME), owner };
+        let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+        let store = Store { dir: PathBuf::from(home).join(DIR_NAME) };
         if !store.dir.exists() {
             DirBuilder::new()
                 .mode(0o700)
                 .create(&store.dir)
                 .map_err(|e| format!("cannot create {}: {e}", store.dir.display()))?;
-            store.give_back(&store.dir);
         }
         Ok(store)
     }
@@ -104,7 +77,6 @@ impl Store {
             .open(&path)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         file.write_all(text.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        self.give_back(&path);
         Ok(name)
     }
 
@@ -121,47 +93,16 @@ impl Store {
     /// reported; the history must never get in the way of the tunnel.
     pub fn log_event(&self, event: &str) {
         let path = self.dir.join(LOG_NAME);
-        let is_new = !path.exists();
         let result = OpenOptions::new()
             .append(true)
             .create(true)
             .mode(0o600)
             .open(&path)
             .and_then(|mut file| writeln!(file, "{} {event}", format::utc_now()));
-        match result {
-            Ok(()) if is_new => self.give_back(&path),
-            Ok(()) => {}
-            Err(e) => eprintln!("warning: cannot write {}: {e}", path.display()),
+        if let Err(e) = result {
+            eprintln!("warning: cannot write {}: {e}", path.display());
         }
     }
-
-    /// Makes a file we created as root belong to the sudo caller.
-    fn give_back(&self, path: &Path) {
-        let Some((uid, gid)) = self.owner else {
-            return;
-        };
-        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-            return;
-        };
-        if unsafe { chown(c_path.as_ptr(), uid, gid) } != 0 {
-            eprintln!("warning: cannot chown {}: {}", path.display(), std::io::Error::last_os_error());
-        }
-    }
-}
-
-/// The home directory of the user who ran sudo, or of the current user.
-fn invoking_user_home() -> Result<(PathBuf, Option<(u32, u32)>), String> {
-    if let Some(user) = std::env::var_os("SUDO_USER").filter(|u| !u.is_empty() && u != "root") {
-        let c_user = CString::new(user.as_bytes()).map_err(|_| "bad SUDO_USER".to_string())?;
-        let entry = unsafe { getpwnam(c_user.as_ptr()) };
-        if !entry.is_null() {
-            let entry = unsafe { &*entry };
-            let dir = unsafe { CStr::from_ptr(entry.pw_dir) };
-            let home = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
-            return Ok((home, Some((entry.pw_uid, entry.pw_gid))));
-        }
-    }
-    std::env::var_os("HOME").map(|home| (PathBuf::from(home), None)).ok_or("HOME is not set".to_string())
 }
 
 /// A file-system-safe profile name: letters, digits, space and `_-.()`,
@@ -227,7 +168,7 @@ mod tests {
     fn import_dedupes_and_deletes() {
         let dir = std::env::temp_dir().join(format!("wg-gui-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let store = Store { dir: dir.clone(), owner: None };
+        let store = Store { dir: dir.clone() };
         assert_eq!(store.import("Office", "a").unwrap(), "Office");
         assert_eq!(store.import("Office", "b").unwrap(), "Office (2)");
         assert_eq!(fs::read_to_string(store.path_of("Office (2)")).unwrap(), "b");

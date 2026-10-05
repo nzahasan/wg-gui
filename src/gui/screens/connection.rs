@@ -16,7 +16,7 @@ use super::{MARGIN, back_button, bar, bar_padding, card, field, header, page, to
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let Some(active) = &app.active else {
-        let body = column![theme::label("Not connected.", 14.0, theme::MUTED)];
+        let body = column![theme::label("Not connected.", 14.0, theme::palette().muted)];
         return page(header("Connection", Some(Message::GoProfiles), None), body, Padding::from(16));
     };
     let summary = app.profile(&active.profile).and_then(|p| p.summary.as_ref().ok());
@@ -29,13 +29,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     // -- title bar with status -------------------------------------------------
     let (label, color, track) = match active.status {
-        Status::Connected => ("CONNECTED", theme::OK, theme::ACCENT),
-        Status::Connecting => ("CONNECTING…", theme::WARN, theme::WARN_TOGGLE),
-        Status::Disconnecting => ("DISCONNECTING…", theme::MUTED, theme::TOGGLE_OFF),
+        Status::Connected => ("CONNECTED", theme::palette().ok, theme::accent()),
+        Status::Connecting => ("CONNECTING…", theme::palette().warn, theme::palette().warn_toggle),
+        Status::Disconnecting => ("DISCONNECTING…", theme::palette().muted, theme::palette().toggle_off),
     };
     let mut status_line = row![text(label).size(12).font(theme::SANS_BOLD).color(color)].spacing(8).align_y(Alignment::Center);
     if active.started.is_some() {
-        status_line = status_line.push(theme::mono(format::duration(active.seconds()), 12.0).color(theme::MUTED));
+        status_line = status_line.push(theme::mono(format::duration(active.seconds()), 12.0).color(theme::palette().muted));
     }
     let switch = button(container(toggle(true, track, 52.0, 28.0)).center_y(44))
         .padding(0)
@@ -47,8 +47,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 back_button(Message::GoProfiles),
                 column![
                     status_line,
-                    text(&active.profile).size(18).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
-                    text(endpoint).size(12.5).color(theme::MUTED),
+                    text(&active.profile).size(18).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
+                    text(endpoint).size(12.5).color(theme::palette().muted),
                 ]
                 .spacing(2)
                 .width(Length::Fill),
@@ -64,7 +64,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let history = &active.history;
     let rate = |series: &std::collections::VecDeque<f32>| format::rate(series.back().copied().unwrap_or(0.0));
     let legend = |caption: &'static str, direction: Direction, value: String| -> Element<'_, Message> {
-        column![theme::label(caption, 12.5, theme::MUTED), directed(value, direction, 20.0)]
+        column![theme::label(caption, 12.5, theme::palette().muted), directed(value, direction, 20.0)]
             .spacing(2)
             .width(Length::Fill)
             .into()
@@ -72,20 +72,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let stats = active.stats;
     let traffic = card(column![
         row![
-            theme::section("TRAFFIC", theme::MUTED).width(Length::Fill),
-            theme::value(format!("last {} s", graph::SAMPLES), 12.0, theme::MUTED),
+            theme::section("TRAFFIC", theme::palette().muted).width(Length::Fill),
+            theme::value(format!("last {} s", graph::SAMPLES), 12.0, theme::palette().muted),
         ],
         row![
             legend("Incoming", Direction::In, rate(&history.incoming)),
             legend("Outgoing", Direction::Out, rate(&history.outgoing)),
         ]
         .spacing(12),
-        canvas(Graph { history, accent: theme::ACCENT }).width(Length::Fill).height(graph::HEIGHT),
-        theme::rule(theme::GRID),
+        canvas(Graph { history, accent: theme::accent() }).width(Length::Fill).height(graph::HEIGHT),
+        theme::rule(theme::palette().grid),
         row![
             small_stat("BYTES IN", directed(format::bytes(stats.rx_bytes), Direction::In, 14.0)),
             small_stat("BYTES OUT", directed(format::bytes(stats.tx_bytes), Direction::Out, 14.0)),
-            small_stat("PACKETS", theme::value(format::count(stats.rx_packets + stats.tx_packets), 14.0, theme::TEXT)),
+            small_stat("PACKETS", theme::value(format::count(stats.rx_packets + stats.tx_packets), 14.0, theme::palette().text)),
         ]
         .spacing(8),
     ]);
@@ -96,7 +96,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(info) = &active.info {
         let addresses: Vec<String> = info.addresses.iter().map(|a| format!("{}/{}", a.ip, a.prefix)).collect();
         body = body.push(card(column![
-            theme::section("CONNECTION", theme::MUTED),
+            theme::section("CONNECTION", theme::palette().muted),
             row![field("Your VPN IP", join(&addresses)), field("Server IP", info.server.ip().to_string())].spacing(16),
             row![field("Protocol", format!("UDP {}", info.server.port())), field("Cipher", "ChaCha20-Poly1305".to_string())]
                 .spacing(16),
@@ -104,14 +104,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ]));
 
         let badge: Element<'_, Message> = if info.dns_changed {
-            container(text("DNS set by profile").size(12).font(theme::SANS_MEDIUM).color(theme::OK))
+            container(text("DNS set by profile").size(12).font(theme::SANS_MEDIUM).color(theme::palette().ok))
                 .padding([3, 8])
-                .style(theme::filled(theme::OK_TINT, 10.0))
+                .style(theme::filled(theme::palette().ok_tint, 10.0))
                 .into()
         } else {
             iced::widget::space().into()
         };
-        let mut dns = column![row![theme::section("DNS", theme::MUTED).width(Length::Fill), badge].align_y(Alignment::Center)]
+        let mut dns = column![row![theme::section("DNS", theme::palette().muted).width(Length::Fill), badge].align_y(Alignment::Center)]
             .spacing(0);
         if info.dns.is_empty() {
             dns = dns.push(dns_row("Servers", "System default (unchanged)".to_string()));
@@ -133,7 +133,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     container(theme::label(
                         format!("{servers} {verb} outside the tunnel's routes, so lookups to {pronoun} use your normal connection, not the VPN."),
                         12.0,
-                        theme::WARN,
+                        theme::palette().warn,
                     ))
                     .padding(Padding { top: 6.0, ..Padding::ZERO }),
                 );
@@ -143,8 +143,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
         let mut routes = column![
             row![
-                theme::section("ROUTES", theme::MUTED).width(Length::Fill),
-                theme::value(format!("{} routes", info.routes.len()), 12.0, theme::MUTED),
+                theme::section("ROUTES", theme::palette().muted).width(Length::Fill),
+                theme::value(format!("{} routes", info.routes.len()), 12.0, theme::palette().muted),
             ],
             route_line("DESTINATION", "GATEWAY", "IFACE", true),
         ]
@@ -153,7 +153,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             routes = routes.push(route_line(&route.destination, &route.gateway, &route.interface, false));
         }
         let note = route_note(&info.allowed_ips, &info.addresses, info.server.is_ipv4());
-        routes = routes.push(container(theme::label(note, 12.0, theme::MUTED)).padding(Padding { top: 6.0, ..Padding::ZERO }));
+        routes = routes.push(container(theme::label(note, 12.0, theme::palette().muted)).padding(Padding { top: 6.0, ..Padding::ZERO }));
         body = body.push(card(routes));
     }
 
@@ -169,8 +169,8 @@ enum Direction {
 /// A traffic figure in its direction's colour, with an arrow after it.
 fn directed<'a>(value: String, direction: Direction, size: f32) -> Element<'a, Message> {
     let (color, arrow) = match direction {
-        Direction::In => (theme::INCOMING, "↓"),
-        Direction::Out => (theme::ACCENT, "↑"),
+        Direction::In => (theme::secondary(), "↓"),
+        Direction::Out => (theme::accent(), "↑"),
     };
     row![theme::value(value, size, color), text(arrow).size(size).font(theme::SANS_SEMIBOLD).color(color)]
         .spacing(size * 0.3)
@@ -179,7 +179,7 @@ fn directed<'a>(value: String, direction: Direction, size: f32) -> Element<'a, M
 }
 
 fn small_stat<'a>(caption: &'a str, value: Element<'a, Message>) -> Element<'a, Message> {
-    column![theme::label(caption, 11.5, theme::MUTED), value]
+    column![theme::label(caption, 11.5, theme::palette().muted), value]
         .spacing(2)
         .padding(Padding { top: 8.0, ..Padding::ZERO })
         .width(Length::Fill)
@@ -188,8 +188,8 @@ fn small_stat<'a>(caption: &'a str, value: Element<'a, Message>) -> Element<'a, 
 
 fn dns_row<'a>(caption: &'a str, value: String) -> Element<'a, Message> {
     column![
-        theme::rule(theme::GRID),
-        row![theme::label(caption, 13.0, theme::MUTED).width(Length::Fill), theme::value(value, 13.0, theme::TEXT)]
+        theme::rule(theme::palette().grid),
+        row![theme::label(caption, 13.0, theme::palette().muted).width(Length::Fill), theme::value(value, 13.0, theme::palette().text)]
             .spacing(12)
             .padding([8, 0]),
     ]
@@ -199,14 +199,14 @@ fn dns_row<'a>(caption: &'a str, value: String) -> Element<'a, Message> {
 fn route_line<'a>(destination: &str, gateway: &str, interface: &str, heading: bool) -> Element<'a, Message> {
     let cell = |value: &str, portion: u16, color: iced::Color| -> Element<'a, Message> {
         let content: Element<'a, Message> =
-            if heading { theme::label(value.to_string(), 11.5, theme::MUTED).into() } else { theme::value(value, 12.5, color) };
+            if heading { theme::label(value.to_string(), 11.5, theme::palette().muted).into() } else { theme::value(value, 12.5, color) };
         container(content).width(Length::FillPortion(portion)).into()
     };
     column![
-        row![cell(destination, 15, theme::TEXT), cell(gateway, 11, theme::TEXT), cell(interface, 6, theme::MUTED)]
+        row![cell(destination, 15, theme::palette().text), cell(gateway, 11, theme::palette().text), cell(interface, 6, theme::palette().muted)]
             .spacing(8)
             .padding([if heading { 6 } else { 7 }, 0]),
-        theme::rule(if heading { theme::AXIS } else { theme::GRID }),
+        theme::rule(if heading { theme::palette().axis } else { theme::palette().grid }),
     ]
     .into()
 }

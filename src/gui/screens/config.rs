@@ -16,8 +16,8 @@ pub fn view<'a>(app: &'a App, name: &'a str) -> Element<'a, Message> {
             row![
                 back_button(Message::GoProfiles),
                 column![
-                    text("Profile Config").size(18).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
-                    text(name).size(12.5).color(theme::MUTED),
+                    text("Profile Config").size(18).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
+                    text(name).size(12.5).color(theme::palette().muted),
                 ]
                 .spacing(2)
                 .width(Length::Fill),
@@ -31,14 +31,14 @@ pub fn view<'a>(app: &'a App, name: &'a str) -> Element<'a, Message> {
     let file_name = app.profile(name).map(|p| p.path.file_name().unwrap_or_default().to_string_lossy().into_owned());
     let body = column![
         row![
-            text(file_name.unwrap_or_default()).size(13).font(theme::SANS_MEDIUM).color(theme::TEXT).width(Length::Fill),
-            theme::label("Read-only", 12.0, theme::MUTED),
+            text(file_name.unwrap_or_default()).size(13).font(theme::SANS_MEDIUM).color(theme::palette().text).width(Length::Fill),
+            theme::label("Read-only", 12.0, theme::palette().muted),
         ]
         .align_y(Alignment::Center),
-        container(text(&app.config_text).size(12.5).font(theme::MONO).color(theme::BG).line_height(1.6))
+        container(text(&app.config_text).size(12.5).font(theme::MONO).color(theme::palette().bg).line_height(1.6))
             .padding(16)
             .width(Length::Fill)
-            .style(theme::filled(theme::TEXT, 10.0)),
+            .style(theme::filled(theme::palette().text, 10.0)),
     ]
     .spacing(12)
     .padding(MARGIN);

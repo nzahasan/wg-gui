@@ -2,6 +2,7 @@
 name = "wg-client"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 # Shared WireGuard core used by both front-ends.
 [lib]
@@ -13,6 +14,12 @@ path = "src/common/lib.rs"
 name = "wg-cli"
 path = "src/cli/main.rs"
 
+# Root daemon that owns the tunnel for the GUI; ships inside wg-gui.app.
+# Build with: cargo helper  (cargo build --release --bin wg-helper)
+[[bin]]
+name = "wg-helper"
+path = "src/helper/main.rs"
+
 # Build with: cargo gui  (cargo build --release --bin wg-gui --features gui)
 [[bin]]
 name = "wg-gui"
@@ -20,7 +27,7 @@ path = "src/gui/main.rs"
 required-features = ["gui"]
 
 [features]
-gui = ["dep:iced", "dep:rfd", "dep:tray-icon", "dep:resvg", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+gui = ["dep:iced", "dep:rfd", "dep:tray-icon", "dep:resvg", "dep:block2", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 x25519-dalek = { version = "3", features = ["static_secrets"] }
@@ -32,10 +39,12 @@ rfd = { version = "0.17", optional = true }
 tray-icon = { version = "0.26", optional = true }
 # Rasterises the menu-bar icon SVG (the same resvg iced uses).
 resvg = { version = "0.45", optional = true, default-features = false }
-# Sets the Dock icon; same versions winit already uses.
+# Sets the Dock icon and follows the system appearance; same versions
+# winit already uses.
+block2 = { version = "0.6", optional = true }
 objc2 = { version = "0.6", optional = true }
-objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSAppearance", "NSRunningApplication", "NSImage", "NSResponder", "NSWindow", "NSButton", "NSControl", "NSView"] }
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSAppearance", "NSRunningApplication", "NSImage", "NSResponder", "NSWindow", "NSButton", "NSControl", "NSView", "NSColor", "NSColorSpace", "block2"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSArray", "NSString", "NSError", "NSUserDefaults", "NSNotification", "NSOperation", "block2"] }
 
 # block 0.1.6 (via iced -> wgpu -> metal) declares an extern static of an
 # uninhabited type, which future Rust will reject. Use a copy with that fixed.

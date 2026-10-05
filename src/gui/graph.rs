@@ -56,14 +56,14 @@ impl<Message> canvas::Program<Message> for Graph<'_> {
         let (w, h) = (bounds.width, bounds.height);
         let max = self.history.scale();
 
-        for (y, color) in [(10.0, theme::GRID), (h / 2.0 + 5.0, theme::GRID), (h - 1.0, theme::AXIS)] {
+        for (y, color) in [(10.0, theme::palette().grid), (h / 2.0 + 5.0, theme::palette().grid), (h - 1.0, theme::palette().axis)] {
             frame.stroke(
                 &Path::line(Point::new(0.0, y), Point::new(w, y)),
                 Stroke::default().with_color(color).with_width(1.0),
             );
         }
 
-        for (series, color) in [(&self.history.incoming, theme::INCOMING), (&self.history.outgoing, self.accent)] {
+        for (series, color) in [(&self.history.incoming, theme::secondary()), (&self.history.outgoing, self.accent)] {
             let points: Vec<Point> = series
                 .iter()
                 .enumerate()
@@ -93,11 +93,11 @@ impl<Message> canvas::Program<Message> for Graph<'_> {
         for (y, value) in [(0.0, max), (h / 2.0 - 5.0, max / 2.0)] {
             let label = format::rate(value);
             let width = label.len() as f32 * 6.7 + 4.0;
-            frame.fill_rectangle(Point::new(w - width, y), iced::Size::new(width, 15.0), Color::WHITE);
+            frame.fill_rectangle(Point::new(w - width, y), iced::Size::new(width, 15.0), theme::palette().surface);
             frame.fill_text(Text {
                 content: label,
                 position: Point::new(w, y),
-                color: theme::MUTED,
+                color: theme::palette().muted,
                 size: Pixels(11.0),
                 font: theme::MONO,
                 align_x: alignment::Horizontal::Right.into(),

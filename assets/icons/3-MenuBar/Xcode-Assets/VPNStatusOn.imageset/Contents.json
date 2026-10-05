@@ -1,0 +1,43 @@
+{
+  "images": [
+    {
+      "idiom": "mac",
+      "scale": "1x",
+      "filename": "vpn-tray-on-light.png"
+    },
+    {
+      "idiom": "mac",
+      "scale": "1x",
+      "filename": "vpn-tray-on-dark.png",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
+    },
+    {
+      "idiom": "mac",
+      "scale": "2x",
+      "filename": "vpn-tray-on-light@2x.png"
+    },
+    {
+      "idiom": "mac",
+      "scale": "2x",
+      "filename": "vpn-tray-on-dark@2x.png",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
+    }
+  ],
+  "info": {
+    "version": 1,
+    "author": "xcode"
+  },
+  "properties": {
+    "template-rendering-intent": "original"
+  }
+}

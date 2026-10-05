@@ -1,0 +1,84 @@
+# On a v* tag: build a universal wg-gui.app, sign and notarize it, attach
+# the zip to the GitHub release and update the cask in the Homebrew tap.
+#
+# Secrets:
+#   MACOS_CERT_P12        base64 of the "Developer ID Application" .p12
+#   MACOS_CERT_PASSWORD   its password
+#   SIGN_IDENTITY         e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID              Apple ID used for notarizing
+#   APPLE_TEAM_ID         team id (also compiled into wg-helper)
+#   APPLE_APP_PASSWORD    app-specific password of APPLE_ID
+#   HOMEBREW_TAP_TOKEN    token with push access to nzahasan/homebrew-tap
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [[ "v$crate" == "$GITHUB_REF_NAME" ]] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $crate"; exit 1; }
+
+      - name: Test
+        run: cargo test --features gui
+
+      - name: Import the signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign and notarize
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          WG_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: packaging/macos/build-app.sh
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wg-gui-*.zip
+
+      - name: Update the Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          sha=$(shasum -a 256 "dist/wg-gui-$version.zip" | cut -d' ' -f1)
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/nzahasan/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/^  version \".*\"/  version \"$version\"/" \
+              -e "s/^  sha256 \".*\"/  sha256 \"$sha\"/" \
+              packaging/homebrew/wg-gui.rb > tap/Casks/wg-gui.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/wg-gui.rb
+          git commit -m "wg-gui $version"
+          git push

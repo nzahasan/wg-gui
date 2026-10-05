@@ -1,6 +1,7 @@
 //! WireGuard desktop client built on the shared core in `src/common`.
 //!
-//! Usage: sudo wg-gui
+//! Runs as the user; tunnels are brought up by `wg-helper`, the root
+//! daemon bundled with the app (see `helper.rs`).
 //!
 //! Profiles live in ~/.wg-gui. Closing the window (or Ctrl-C in the
 //! terminal) takes the tunnel down and restores DNS and routes first.
@@ -8,6 +9,7 @@
 mod app;
 mod format;
 mod graph;
+mod helper;
 mod icons;
 mod screens;
 mod storage;
@@ -28,7 +30,6 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn signal(signum: c_int, handler: extern "C" fn(c_int)) -> usize;
-    fn geteuid() -> u32;
 }
 
 extern "C" fn on_signal(_signum: c_int) {
@@ -45,9 +46,8 @@ fn main() -> iced::Result {
         signal(SIGINT, on_signal);
         signal(SIGTERM, on_signal);
     }
-    let is_root = unsafe { geteuid() } == 0;
 
-    iced::application(move || App::new(is_root), App::update, App::view)
+    iced::application(App::new, App::update, App::view)
         .title("wg-gui")
         .subscription(App::subscription)
         .window(window::Settings {
@@ -63,7 +63,9 @@ fn main() -> iced::Result {
         .font(theme::MONO_REGULAR_TTF)
         .font(theme::MONO_MEDIUM_TTF)
         .default_font(theme::SANS)
-        .theme(iced::Theme::Light)
+        // No theme of our own: iced then follows the system appearance and
+        // reports changes (`Message::ThemeChanged`); our styles take their
+        // colours from `theme::palette()`.
         .antialiasing(true)
         .run()
 }

@@ -8,6 +8,7 @@ pub mod base64;
 pub mod config;
 pub mod connection;
 pub mod ip;
+pub mod ipc;
 pub mod netconfig;
 pub mod noise;
 pub mod session;

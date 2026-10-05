@@ -1,3 +1,4 @@
 [alias]
 cli = "build --release --bin wg-cli"
+helper = "build --release --bin wg-helper"
 gui = "build --release --bin wg-gui --features gui"

@@ -11,11 +11,12 @@ use iced::widget::{container, float, stack};
 use iced::{Color, Element, Event, Length, Subscription, Task, Vector, event, window};
 
 use wg_common::config::{self, Cidr};
-use wg_common::connection::Connection;
+use wg_common::ipc::{HelperClient, Started};
 use wg_common::netconfig::Route;
 use wg_common::tunnel::Stats;
 
 use crate::graph::History;
+use crate::helper::{self, HelperState};
 use crate::storage::{self, Profile, Store};
 use crate::{format, screens, theme, tray};
 
@@ -56,8 +57,8 @@ pub enum Status {
     Disconnecting,
 }
 
-/// What the Connection screen shows about a running tunnel. Copied out of
-/// the `Connection` so it can travel in a `Message`.
+/// What the Connection screen shows about a running tunnel: the profile's
+/// config plus what the helper reported when it brought the tunnel up.
 #[derive(Debug, Clone)]
 pub struct TunnelInfo {
     pub tun_name: String,
@@ -127,19 +128,33 @@ pub enum Message {
     Activate,
     /// "Show application" in the menu-bar menu.
     ShowWindow,
+    /// Open System Settings to allow the helper.
+    OpenLoginItems,
+    /// The system switched between light and dark mode.
+    ThemeChanged(iced::theme::Mode),
+    /// The accent colour was changed in System Settings.
+    AccentChanged,
+    /// Register the helper again after it was uninstalled.
+    InstallHelper,
+    /// "Uninstall Helper…" in the menu-bar menu; asks first.
+    UninstallHelper,
+    UninstallConfirmed(bool),
+    HelperUninstalled(Result<(), String>),
     CloseRequested,
 }
 
 pub struct App {
     pub store: Option<Store>,
     pub store_error: Option<String>,
-    pub is_root: bool,
+    /// Whether the root helper that brings tunnels up can be used.
+    pub helper: HelperState,
     pub screen: Screen,
     pub profiles: Vec<Profile>,
     pub active: Option<Active>,
-    /// The running tunnel; shared with the worker threads that start and
-    /// stop it, since both block on system commands.
-    connection: Arc<Mutex<Option<Connection>>>,
+    /// Our link to the helper while a tunnel is up; the tunnel goes down
+    /// when it is dropped. Shared with the worker threads that start and
+    /// stop the tunnel, since both block on the helper.
+    connection: Arc<Mutex<Option<HelperClient>>>,
     pub pending: Option<Pending>,
     pub import_error: Option<String>,
     pub connect_after: bool,
@@ -162,16 +177,19 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(is_root: bool) -> App {
+    /// The initial state, and a request for the system appearance (the
+    /// answer arrives as `ThemeChanged`).
+    pub fn new() -> (App, Task<Message>) {
+        theme::set_accent(tray::system_accent());
         let (store, store_error) = match Store::open() {
             Ok(store) => (Some(store), None),
             Err(e) => (None, Some(e)),
         };
         let profiles = store.as_ref().map(Store::list).unwrap_or_default();
-        App {
+        let app = App {
             store,
             store_error,
-            is_root,
+            helper: helper::ensure_registered(),
             screen: Screen::Profiles,
             profiles,
             active: None,
@@ -190,7 +208,8 @@ impl App {
             queued: None,
             quitting: false,
             tray: None,
-        }
+        };
+        (app, iced::system::theme().map(Message::ThemeChanged))
     }
 
     pub fn toast(&self) -> Option<&str> {
@@ -212,6 +231,7 @@ impl App {
             tray.set_status(
                 status.is_some_and(|s| s != Status::Disconnecting),
                 status == Some(Status::Connected),
+                theme::is_dark(),
             );
         }
         task
@@ -300,7 +320,7 @@ impl App {
                     Ok(tray) => self.tray = Some(tray),
                     Err(e) => eprintln!("warning: {e}"),
                 }
-                // Launched from a terminal (under sudo), the window would
+                // Launched from a terminal, the window would
                 // otherwise open behind it. Lift it above everything once,
                 // then let it behave like a normal window again. Raising
                 // the window is not enough: the app must also be active, or
@@ -323,6 +343,47 @@ impl App {
             Message::ShowWindow => {
                 tray::activate_app();
                 return window::latest().and_then(|id| Task::batch([window::minimize(id, false), window::gain_focus(id)]));
+            }
+            Message::OpenLoginItems => helper::open_login_items(),
+            Message::ThemeChanged(mode) => {
+                theme::set_dark(mode == iced::theme::Mode::Dark);
+                // The accent has a variant for each appearance.
+                theme::set_accent(tray::system_accent());
+            }
+            Message::AccentChanged => theme::set_accent(tray::system_accent()),
+            Message::InstallHelper => {
+                self.helper = helper::ensure_registered();
+                if self.helper == HelperState::NeedsApproval {
+                    helper::open_login_items();
+                }
+            }
+            Message::UninstallHelper => {
+                if self.active.is_some() {
+                    self.show_toast("Disconnect before uninstalling the helper".to_string());
+                    return Task::none();
+                }
+                let dialog = rfd::AsyncMessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("Uninstall the wg-gui helper?")
+                    .set_description(
+                        "The helper runs as root to bring tunnels up. Uninstalling stops it and removes it from \
+                         Login Items; do this before deleting wg-gui. You can install it again from the Profiles screen.",
+                    )
+                    .set_buttons(rfd::MessageButtons::OkCancelCustom("Uninstall".to_string(), "Cancel".to_string()));
+                return Task::perform(dialog.show(), |result| {
+                    Message::UninstallConfirmed(result == rfd::MessageDialogResult::Custom("Uninstall".to_string()))
+                });
+            }
+            Message::UninstallConfirmed(false) => {}
+            Message::UninstallConfirmed(true) => {
+                return Task::perform(background(helper::uninstall), Message::HelperUninstalled);
+            }
+            Message::HelperUninstalled(result) => {
+                self.helper = helper::state();
+                match result {
+                    Ok(()) => self.show_toast("Helper uninstalled".to_string()),
+                    Err(e) => self.show_toast(e),
+                }
             }
             Message::CloseRequested => {
                 self.quitting = true;
@@ -350,7 +411,14 @@ impl App {
         } else {
             Subscription::none()
         };
-        Subscription::batch([tick, events, frames, tray::events()])
+        Subscription::batch([
+            tick,
+            events,
+            frames,
+            tray::events(),
+            iced::system::theme_changes().map(Message::ThemeChanged),
+            tray::accent_changes(),
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -394,16 +462,28 @@ impl App {
         let veil = container(iced::widget::space())
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::filled(Color { a: 1.0 - progress, ..theme::BG }, 0.0));
+            .style(theme::filled(Color { a: 1.0 - progress, ..theme::palette().bg }, 0.0));
         float(stack![screen, veil]).translate(move |_, _| Vector::new(offset, 0.0)).into()
     }
 
     // -- connecting --------------------------------------------------------
 
     fn connect(&mut self, name: String) -> Task<Message> {
-        if !self.is_root {
-            self.show_toast("Run wg-gui with sudo to connect".to_string());
-            return Task::none();
+        self.helper = helper::state();
+        match &self.helper {
+            HelperState::Ready => {}
+            HelperState::NeedsApproval => {
+                self.show_toast("Allow wg-gui in Login Items first".to_string());
+                return Task::none();
+            }
+            HelperState::NotInstalled => {
+                self.show_toast("Install the helper first".to_string());
+                return Task::none();
+            }
+            HelperState::Missing(e) => {
+                self.show_toast(e.clone());
+                return Task::none();
+            }
         }
         if let Some(active) = &self.active {
             // One tunnel at a time: bring the current one down first.
@@ -432,10 +512,12 @@ impl App {
         let slot = Arc::clone(&self.connection);
         Task::perform(
             background(move || {
-                let config = config::load(&path.to_string_lossy())?;
-                let connection = Connection::start(config)?;
-                let info = tunnel_info(&connection);
-                *slot.lock().unwrap() = Some(connection);
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+                let config = config::parse(&text)?;
+                let mut client = HelperClient::connect()?;
+                let started = client.start(&text)?;
+                let info = tunnel_info(&config, started);
+                *slot.lock().unwrap() = Some(client);
                 Ok(info)
             }),
             move |result| Message::Started(name.clone(), result),
@@ -498,8 +580,12 @@ impl App {
         let slot = Arc::clone(&self.connection);
         Task::perform(
             background(move || {
-                if let Some(connection) = slot.lock().unwrap().take() {
-                    connection.stop();
+                if let Some(mut client) = slot.lock().unwrap().take()
+                    && let Err(e) = client.stop()
+                {
+                    // Dropping the client closes the socket, and the
+                    // helper stops the tunnel then anyway.
+                    eprintln!("warning: {e}");
                 }
             }),
             |_| Message::Stopped,
@@ -538,13 +624,29 @@ impl App {
             return self.update(Message::CloseRequested);
         }
 
+        if self.helper != HelperState::Ready {
+            self.helper = helper::state();
+        }
+
         let Some(active) = &mut self.active else {
             return Task::none();
         };
-        if active.info.is_none() {
+        if active.info.is_none() || active.status == Status::Disconnecting {
             return Task::none();
         }
-        let Some(stats) = self.connection.lock().unwrap().as_ref().map(Connection::stats) else {
+        let Some(result) = self.connection.lock().unwrap().as_mut().map(HelperClient::stats) else {
+            return Task::none();
+        };
+        let stats = match result {
+            Ok(stats) => stats,
+            Err(e) => {
+                // The helper died or restarted; the tunnel is gone with it.
+                self.connection.lock().unwrap().take();
+                self.show_toast(format!("Connection lost: {e}"));
+                return self.stopped();
+            }
+        };
+        let Some(active) = &mut self.active else {
             return Task::none();
         };
         let now = Instant::now();
@@ -665,17 +767,16 @@ impl App {
     }
 }
 
-fn tunnel_info(connection: &Connection) -> TunnelInfo {
-    let config = &connection.config;
+fn tunnel_info(config: &config::Config, started: Started) -> TunnelInfo {
     TunnelInfo {
-        tun_name: connection.tun_name.clone(),
+        tun_name: started.tun_name,
         endpoint_text: config.peer.endpoint_text.clone(),
-        server: config.peer.endpoint,
+        server: started.endpoint,
         addresses: config.addresses.clone(),
         dns: config.dns.clone(),
-        dns_changed: connection.undo.dns_changed(),
-        mtu: connection.undo.mtu,
-        routes: connection.undo.routes.clone(),
+        dns_changed: started.dns_changed,
+        mtu: started.mtu,
+        routes: started.routes,
         allowed_ips: config.peer.allowed_ips.clone(),
     }
 }

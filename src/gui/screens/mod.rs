@@ -27,7 +27,7 @@ pub fn header<'a>(
     if let Some(message) = back {
         content = content.push(back_button(message));
     }
-    content = content.push(text(title).size(18).font(theme::SANS_SEMIBOLD).color(theme::TEXT).width(Length::Fill));
+    content = content.push(text(title).size(18).font(theme::SANS_SEMIBOLD).color(theme::palette().text).width(Length::Fill));
     if let Some(action) = action {
         content = content.push(action);
     }
@@ -36,7 +36,7 @@ pub fn header<'a>(
 
 /// The white title bar, ruled off below.
 pub fn bar<'a>(content: container::Container<'a, Message>) -> Element<'a, Message> {
-    column![content.width(Length::Fill).style(theme::header), theme::rule(theme::BORDER)].into()
+    column![content.width(Length::Fill).style(theme::header), theme::rule(theme::palette().border)].into()
 }
 
 /// Title-bar padding that puts the first and last items on MARGIN.
@@ -46,7 +46,7 @@ pub fn bar_padding(vertical: f32) -> Padding {
 
 /// The back chevron, centred in a small rounded square.
 pub fn back_button<'a>(message: Message) -> Element<'a, Message> {
-    button(container(icons::back(22.0, theme::TEXT)).center(BACK_SIZE))
+    button(container(icons::back(22.0, theme::palette().text)).center(BACK_SIZE))
         .padding(0)
         .on_press(message)
         .style(theme::icon_button)
@@ -86,7 +86,7 @@ pub fn toggle<'a>(on: bool, color: Color, width: f32, height: f32) -> Element<'a
 
 /// A small caption/value pair, e.g. "Server IP / 203.0.113.10".
 pub fn field<'a>(caption: &'a str, value: String) -> Element<'a, Message> {
-    column![theme::label(caption, 12.0, theme::MUTED), theme::value(value, 13.5, theme::TEXT)]
+    column![theme::label(caption, 12.0, theme::palette().muted), theme::value(value, 13.5, theme::palette().text)]
         .spacing(2)
         .width(Length::Fill)
         .into()
@@ -94,36 +94,36 @@ pub fn field<'a>(caption: &'a str, value: String) -> Element<'a, Message> {
 
 /// A white card with a section title.
 pub fn card<'a>(content: Column<'a, Message>) -> Element<'a, Message> {
-    container(content.spacing(12)).padding(16).width(Length::Fill).style(theme::card(theme::BORDER, 12.0)).into()
+    container(content.spacing(12)).padding(16).width(Length::Fill).style(theme::card(theme::palette().border, 12.0)).into()
 }
 
 pub fn error_box(message: &str) -> Element<'_, Message> {
-    container(theme::label(message, 13.0, theme::ERROR))
+    container(theme::label(message, 13.0, theme::palette().error))
         .padding([12, 14])
         .width(Length::Fill)
-        .style(theme::filled(theme::ERROR_TINT, 8.0))
+        .style(theme::filled(theme::palette().error_tint, 8.0))
         .into()
 }
 
 pub fn drop_overlay<'a>() -> Element<'a, Message> {
     let inner = column![
-        icons::download(48.0, theme::TEXT),
-        text("Drop to import profiles").size(17).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
-        theme::label("WireGuard .conf files", 13.0, theme::MUTED),
+        icons::download(48.0, theme::palette().text),
+        text("Drop to import profiles").size(17).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
+        theme::label("WireGuard .conf files", 13.0, theme::palette().muted),
     ]
     .spacing(12)
     .align_x(Alignment::Center);
     container(
         container(inner)
             .center(Length::Fill)
-            .style(theme::dashed_zone(theme::ACCENT, Color { a: 0.94, ..Color::WHITE })),
+            .style(theme::dashed_zone(theme::accent(), Color { a: 0.94, ..theme::palette().surface })),
     )
     .padding(10)
     .into()
 }
 
 pub fn toast(message: &str) -> Element<'_, Message> {
-    let bubble = container(text(message).size(13.5).color(Color::WHITE)).padding([14, 16]).width(Length::Fill).style(theme::toast);
+    let bubble = container(text(message).size(13.5).color(theme::palette().toast_text)).padding([14, 16]).width(Length::Fill).style(theme::toast);
     container(bubble)
         .padding(Padding { top: 0.0, right: MARGIN, bottom: 24.0, left: MARGIN })
         .height(Length::Fill)

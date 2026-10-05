@@ -35,7 +35,7 @@ impl Undo {
 }
 
 /// One route added for the tunnel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Route {
     pub destination: String,
     /// "on-link" for routes straight onto the tunnel interface.

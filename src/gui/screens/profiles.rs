@@ -4,6 +4,7 @@ use iced::widget::{Column, button, column, container, row, space, stack, text};
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::app::{App, Message, Status};
+use crate::helper::HelperState;
 use crate::storage::Profile;
 use crate::{format, icons, theme};
 
@@ -17,7 +18,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let header = bar(
         container(
             row![
-                text("Profiles").size(18).font(theme::SANS_SEMIBOLD).color(theme::TEXT).width(Length::Fill),
+                text("Profiles").size(18).font(theme::SANS_SEMIBOLD).color(theme::palette().text).width(Length::Fill),
                 add,
             ]
             .spacing(10)
@@ -29,8 +30,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
     );
 
     let mut body = Column::new().spacing(10);
-    if !app.is_root {
-        body = body.push(error_box("Not running as root. Start with: sudo wg-gui"));
+    match &app.helper {
+        HelperState::Ready => {}
+        HelperState::NeedsApproval => body = body.push(approval_box()),
+        HelperState::NotInstalled => body = body.push(install_box()),
+        HelperState::Missing(e) => body = body.push(error_box(e)),
     }
     if let Some(e) = &app.store_error {
         body = body.push(error_box(e));
@@ -40,14 +44,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         app.profiles.iter().partition(|p| app.is_active(&p.name));
 
     if !connected.is_empty() {
-        body = body.push(theme::section("CONNECTED", theme::OK));
+        body = body.push(theme::section("CONNECTED", theme::palette().ok));
         for profile in connected {
             body = body.push(profile_row(app, profile, true));
         }
         body = body.push(container(iced::widget::space()).height(8));
     }
     if !others.is_empty() {
-        body = body.push(theme::section("DISCONNECTED", theme::MUTED));
+        body = body.push(theme::section("DISCONNECTED", theme::palette().muted));
         for profile in others {
             body = body.push(profile_row(app, profile, false));
         }
@@ -55,10 +59,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if app.profiles.is_empty() {
         body = body.push(
             column![
-                icons::shield(40.0, theme::MUTED),
-                text("No profiles yet").size(16).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
+                icons::shield(40.0, theme::palette().muted),
+                text("No profiles yet").size(16).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
                 container(
-                    theme::label("Drag and drop WireGuard .conf files anywhere in this window, or press + to import one.", 14.0, theme::MUTED)
+                    theme::label("Drag and drop WireGuard .conf files anywhere in this window, or press + to import one.", 14.0, theme::palette().muted)
                         .align_x(Alignment::Center)
                 )
                 .max_width(280),
@@ -73,8 +77,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if !app.profiles.is_empty() {
         body = body.push(
             column![
-                icons::download(16.0, theme::MUTED),
-                theme::label("Tip: drop one or more .conf files on this window to import them.", 12.5, theme::MUTED)
+                icons::download(16.0, theme::palette().muted),
+                theme::label("Tip: drop one or more .conf files on this window to import them.", 12.5, theme::palette().muted)
                     .align_x(Alignment::Center),
             ]
             .spacing(6)
@@ -91,24 +95,24 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
     // Host in Plex Sans, the port (a number) in Chivo Mono.
     let meta: Element<'a, Message> = match &profile.summary {
         Ok(s) => row![
-            text(format!("{} · UDP ", s.host)).size(12.5).color(theme::MUTED),
-            theme::mono(s.port.to_string(), 12.5).color(theme::MUTED),
+            text(format!("{} · UDP ", s.host)).size(12.5).color(theme::palette().muted),
+            theme::mono(s.port.to_string(), 12.5).color(theme::palette().muted),
         ]
         .into(),
-        Err(e) => theme::label(format!("Invalid config: {e}"), 12.5, theme::ERROR).into(),
+        Err(e) => theme::label(format!("Invalid config: {e}"), 12.5, theme::palette().error).into(),
     };
 
-    let mut lines = column![text(&profile.name).size(15).font(theme::SANS_SEMIBOLD).color(theme::TEXT)].spacing(3);
+    let mut lines = column![text(&profile.name).size(15).font(theme::SANS_SEMIBOLD).color(theme::palette().text)].spacing(3);
     if connected {
         let active = app.active.as_ref().expect("connected implies active");
         let status: Element<'a, Message> = match active.status {
             Status::Connected => row![
-                text("Connected · ").size(12.5).font(theme::SANS_MEDIUM).color(theme::OK),
-                text(format::duration(active.seconds())).size(12.5).font(theme::MONO_MEDIUM).color(theme::OK),
+                text("Connected · ").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().ok),
+                text(format::duration(active.seconds())).size(12.5).font(theme::MONO_MEDIUM).color(theme::palette().ok),
             ]
             .into(),
-            Status::Connecting => text("Connecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::OK).into(),
-            Status::Disconnecting => text("Disconnecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::MUTED).into(),
+            Status::Connecting => text("Connecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().ok).into(),
+            Status::Disconnecting => text("Disconnecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().muted).into(),
         };
         lines = lines.push(status);
     }
@@ -116,11 +120,11 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
 
     let (track, border) = if connected {
         let up = app.active.as_ref().is_some_and(|a| a.status == Status::Connected);
-        (if up { theme::ACCENT } else { theme::WARN_TOGGLE }, theme::OK_BORDER)
+        (if up { theme::accent() } else { theme::palette().warn_toggle }, theme::palette().ok_border)
     } else if app.highlight.as_deref() == Some(profile.name.as_str()) {
-        (theme::TOGGLE_OFF, theme::ACCENT)
+        (theme::palette().toggle_off, theme::accent())
     } else {
-        (theme::TOGGLE_OFF, theme::BORDER)
+        (theme::palette().toggle_off, theme::palette().border)
     };
 
     // The card body opens the connection (or connects); the toggle sits on
@@ -150,17 +154,17 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
         .center_y(Length::Fill)
         .padding(Padding { right: CARD_INSET, ..Padding::ZERO });
 
-    let mut actions = row![action(icons::document(16.0, theme::TEXT), "View config", theme::TEXT, Message::ViewConfig(profile.name.clone()))]
+    let mut actions = row![action(icons::document(16.0, theme::palette().text), "View config", theme::palette().text, Message::ViewConfig(profile.name.clone()))]
         .spacing(4)
         .align_y(Alignment::Center);
     if !connected {
-        actions = actions.push(action(icons::trash(16.0, theme::ACCENT), "Delete", theme::ACCENT, Message::Delete(profile.name.clone())));
+        actions = actions.push(action(icons::trash(16.0, theme::accent()), "Delete", theme::accent(), Message::Delete(profile.name.clone())));
     }
 
     // The 1 px padding keeps the hover wash inside the border.
     container(column![
         stack![body, switch_layer],
-        theme::rule(theme::GRID),
+        theme::rule(theme::palette().grid),
         // Action buttons have 10 px of their own padding; together they
         // put the icons in line with the profile name.
         container(actions).padding(Padding { top: 6.0, right: CARD_INSET - 10.0, bottom: 6.0, left: CARD_INSET - 10.0 }),
@@ -185,5 +189,48 @@ fn action<'a>(icon: iced::widget::Svg<'a>, label: &'a str, color: iced::Color, m
     .padding(0)
     .on_press(message)
     .style(move |theme, status| iced::widget::button::Style { text_color: color, ..theme::icon_button(theme, status) })
+    .into()
+}
+
+/// Asks the user to allow the helper, which macOS keeps switched off
+/// until they do.
+fn approval_box<'a>() -> Element<'a, Message> {
+    let open = button(text("Open Login Items").size(13).font(theme::SANS_SEMIBOLD))
+        .padding([8, 14])
+        .on_press(Message::OpenLoginItems)
+        .style(theme::pill_primary);
+    container(
+        column![
+            theme::label(
+                "wg-gui needs its helper to bring tunnels up. Allow “wg-gui” under Allow in the Background in System Settings.",
+                13.0,
+                theme::palette().text
+            ),
+            open,
+        ]
+        .spacing(10),
+    )
+    .padding([12, 14])
+    .width(Length::Fill)
+    .style(theme::filled(theme::palette().error_tint, 8.0))
+    .into()
+}
+
+/// Offers to install the helper again after it was uninstalled.
+fn install_box<'a>() -> Element<'a, Message> {
+    let install = button(text("Install Helper").size(13).font(theme::SANS_SEMIBOLD))
+        .padding([8, 14])
+        .on_press(Message::InstallHelper)
+        .style(theme::pill_primary);
+    container(
+        column![
+            theme::label("The wg-gui helper is not installed, so tunnels cannot be brought up.", 13.0, theme::palette().text),
+            install,
+        ]
+        .spacing(10),
+    )
+    .padding([12, 14])
+    .width(Length::Fill)
+    .style(theme::filled(theme::palette().error_tint, 8.0))
     .into()
 }

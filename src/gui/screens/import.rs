@@ -14,12 +14,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let mut body = Column::new().spacing(16);
 
     if app.pending.is_none() {
-        let (border, fill) = if app.drag_over { (theme::ACCENT, theme::ACCENT_TINT) } else { (theme::INPUT_BORDER, theme::SURFACE) };
+        let (border, fill) = if app.drag_over { (theme::accent(), theme::accent_tint()) } else { (theme::palette().input_border, theme::palette().surface) };
         let zone = column![
-            icons::upload_file(48.0, theme::MUTED),
-            text("Drag and drop to upload .conf profile").size(16).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
+            icons::upload_file(48.0, theme::palette().muted),
+            text("Drag and drop to upload .conf profile").size(16).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
             container(
-                theme::label("Drop one file to review it before adding, or several files to add them all at once.", 13.0, theme::MUTED)
+                theme::label("Drop one file to review it before adding, or several files to add them all at once.", 13.0, theme::palette().muted)
                     .align_x(Alignment::Center),
             )
             .max_width(300),
@@ -31,7 +31,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         body = body.push(theme::label(
             "Supported: WireGuard configuration files (.conf) with one [Peer].",
             12.5,
-            theme::MUTED,
+            theme::palette().muted,
         ));
     }
 
@@ -42,10 +42,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(pending) = &app.pending {
         let file_card = container(
             row![
-                icons::checked_file(28.0, theme::OK),
+                icons::checked_file(28.0, theme::palette().ok),
                 column![
-                    text(&pending.file_name).size(13.5).font(theme::SANS_SEMIBOLD).color(theme::TEXT),
-                    theme::label("Profile successfully read", 12.5, theme::OK),
+                    text(&pending.file_name).size(13.5).font(theme::SANS_SEMIBOLD).color(theme::palette().text),
+                    theme::label("Profile successfully read", 12.5, theme::palette().ok),
                 ]
                 .spacing(2),
             ]
@@ -54,7 +54,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         )
         .padding(16)
         .width(Length::Fill)
-        .style(theme::card(theme::BORDER, 12.0));
+        .style(theme::card(theme::palette().border, 12.0));
 
         let name_input = text_input("Profile name", &pending.name)
             .on_input(Message::PendingName)
@@ -85,9 +85,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .spacing(12);
 
         body = body
-            .push(theme::section("IMPORTED PROFILE", theme::MUTED))
+            .push(theme::section("IMPORTED PROFILE", theme::palette().muted))
             .push(file_card)
-            .push(text("Profile Name").size(13).font(theme::SANS_SEMIBOLD).color(theme::TEXT))
+            .push(text("Profile Name").size(13).font(theme::SANS_SEMIBOLD).color(theme::palette().text))
             .push(name_input)
             .push(tiles)
             .push(container(connect_after).height(44).align_y(Alignment::Center))
@@ -98,10 +98,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn tile<'a>(caption: &'a str, value: String) -> Element<'a, Message> {
-    container(column![theme::label(caption, 12.0, theme::MUTED), theme::value(value, 13.0, theme::TEXT)].spacing(4))
+    container(column![theme::label(caption, 12.0, theme::palette().muted), theme::value(value, 13.0, theme::palette().text)].spacing(4))
         .padding(12)
         .width(Length::Fill)
-        .style(theme::card(theme::BORDER, 8.0))
+        .style(theme::card(theme::palette().border, 8.0))
         .into()
 }
 

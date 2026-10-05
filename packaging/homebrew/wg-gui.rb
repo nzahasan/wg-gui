@@ -1,0 +1,31 @@
+# Source of Casks/wg-gui.rb in github.com/nzahasan/homebrew-tap. The
+# release workflow fills in version and sha256 and pushes it there.
+cask "wg-gui" do
+  version "0.1.0"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+
+  url "https://github.com/nzahasan/wg-gui/releases/download/v#{version}/wg-gui-#{version}.zip"
+  name "wg-gui"
+  desc "Lightweight userspace WireGuard client with a menu-bar UI"
+  homepage "https://github.com/nzahasan/wg-gui"
+
+  depends_on macos: ">= :ventura"
+
+  app "wg-gui.app"
+  binary "#{appdir}/wg-gui.app/Contents/MacOS/wg-cli"
+
+  uninstall launchctl: "com.nzahasan.wg-gui.helper",
+            quit:      "com.nzahasan.wg-gui",
+            delete:    "/var/run/com.nzahasan.wg-gui.helper.sock"
+
+  zap trash: [
+    "/var/log/wg-gui-helper.log",
+    "~/.wg-gui",
+  ]
+
+  caveats <<~EOS
+    On first launch, allow wg-gui's helper in
+      System Settings → General → Login Items → Allow in the Background
+    It is the part that runs as root to bring tunnels up.
+  EOS
+end
