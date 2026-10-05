@@ -1,13 +1,16 @@
 #!/bin/bash
 # Tests wg-gui the way users get it: builds the app with build-app.sh,
-# installs it in /Applications, runs wg-helper as a launchd daemon and
-# starts the GUI. When the GUI quits (or on Ctrl-C) it runs itself with
-# --clean, which uninstalls everything and checks nothing is left behind.
+# installs it as the Homebrew cask does (the app in /Applications, wg-cli
+# on the PATH), runs wg-helper as a launchd daemon and starts the GUI.
+# When the GUI quits (or on Ctrl-C) it runs itself with --clean, which
+# undoes all of that and checks nothing is left behind. Profiles and
+# settings the GUI creates are removed too, unless you had them before.
 #
-# Usage: scripts/install-test.sh [--zap]
+# Usage: scripts/install-test.sh
 #        scripts/install-test.sh --clean [--zap]
 #   --clean  only uninstall and check; also cleans up after a crashed run
-#   --zap    also delete ~/.wg-gui (your profiles and their keys)
+#   --zap    also delete your profiles (~/.wg-gui, with their keys) and
+#            wg-gui's settings, as `brew uninstall --zap` does
 #
 # Unsigned, the helper runs with --dev and accepts any local client. With
 # SIGN_IDENTITY and WG_TEAM_ID set (see build-app.sh) it checks the GUI's
@@ -24,6 +27,17 @@ DAEMON=/Library/LaunchDaemons/$LABEL.plist
 SOCKET=/var/run/$LABEL.sock
 LOG=/var/log/wg-gui-helper.log
 SAVED_LOG=/tmp/wg-gui-install-test-helper.log
+BUNDLE_ID=com.nzahasan.wg-gui
+# wg-cli on the PATH, where the cask's `binary` stanza puts it.
+CLI_LINK=$(brew --prefix 2>/dev/null || echo /opt/homebrew)/bin/wg-cli
+# What the GUI creates in your home folder; the cask's `zap` list.
+USER_DATA=(
+    "$HOME/.wg-gui"
+    "$HOME/Library/Caches/$BUNDLE_ID"
+    "$HOME/Library/HTTPStorages/$BUNDLE_ID"
+    "$HOME/Library/Preferences/$BUNDLE_ID.plist"
+    "$HOME/Library/Saved Application State/$BUNDLE_ID.savedState"
+)
 
 CLEAN=0 ZAP=0
 for arg; do
@@ -43,6 +57,8 @@ dns_now() { scutil --dns | sed -n 's/.*nameserver\[[0-9]*\] : //p' | sort -u | t
 route_lines() { netstat -rn | wc -l | tr -d ' '; }
 daemon_loaded() { sudo launchctl print "system/$LABEL" >/dev/null 2>&1; }
 app_running() { pgrep -f "^$APP/Contents/MacOS/" >/dev/null; }
+cli_linked() { [[ $(readlink "$CLI_LINK" 2>/dev/null) == "$APP/"* ]]; }
+user_data_exists() { for path in "${USER_DATA[@]}"; do [[ -e $path ]] && return 0; done; return 1; }
 
 uninstall() {
     trap '' INT TERM # don't stop half-way on a second Ctrl-C
@@ -55,8 +71,12 @@ uninstall() {
     sudo pkill -KILL -f "^$APP/Contents/MacOS/" # anything still hanging on
 
     if sudo test -f "$LOG"; then sudo cat "$LOG" >"$SAVED_LOG"; fi
+    if cli_linked; then rm -f "$CLI_LINK"; fi
     sudo rm -rf "$APP" "$DAEMON" "$SOCKET" "$LOG" dist
-    if ((ZAP)); then rm -rf ~/.wg-gui; fi
+    if ((ZAP)); then
+        defaults delete "$BUNDLE_ID" 2>/dev/null # also clears cfprefsd's copy
+        rm -rf "${USER_DATA[@]}"
+    fi
 }
 
 check_nothing_left() {
@@ -66,13 +86,14 @@ check_nothing_left() {
     for path in "$APP" "$DAEMON" "$SOCKET" "$LOG"; do
         if sudo test -e "$path"; then fail "$path is still there"; else pass "$path removed"; fi
     done
+    if cli_linked; then fail "$CLI_LINK is still there"; else pass "no wg-cli link"; fi
     if sudo sfltool dumpbtm 2>/dev/null | grep -qi wg-gui; then
         fail "Login Items still lists wg-gui (sfltool dumpbtm)"
     else
         pass "not in Login Items"
     fi
     if ((ZAP)); then
-        if [[ -e ~/.wg-gui ]]; then fail "~/.wg-gui is still there"; else pass "~/.wg-gui removed"; fi
+        if user_data_exists; then fail "profiles or settings are still there"; else pass "profiles and settings removed"; fi
     fi
     if [[ -n ${DNS_BEFORE:-} ]]; then
         if [[ $(dns_now) == "$DNS_BEFORE" ]]; then pass "DNS as before"; else fail "DNS is $(dns_now), was $DNS_BEFORE"; fi
@@ -112,7 +133,11 @@ export DNS_BEFORE ROUTES_BEFORE
 DNS_BEFORE=$(dns_now)
 ROUTES_BEFORE=$(route_lines)
 CLEAN_ARGS=(--clean)
-if ((ZAP)); then CLEAN_ARGS+=(--zap); fi
+if user_data_exists; then
+    echo "==> keeping your existing profiles and settings when done"
+else
+    CLEAN_ARGS+=(--zap) # whatever the GUI creates goes again
+fi
 trap '"$SELF" "${CLEAN_ARGS[@]}"; exit $?' EXIT
 trap 'exit 130' INT TERM
 
@@ -121,6 +146,11 @@ packaging/macos/build-app.sh || exit 1
 
 echo "==> installing $APP"
 sudo ditto -x -k dist/wg-gui-*.zip /Applications || exit 1
+if [[ -e $CLI_LINK ]]; then
+    echo "     $CLI_LINK exists already; not linking wg-cli"
+else
+    ln -s "$APP/Contents/MacOS/wg-cli" "$CLI_LINK" && echo "     linked $CLI_LINK"
+fi
 
 echo "==> starting wg-helper with launchd ($LABEL)"
 # The bundled plist is for SMAppService; launchd needs the full path.

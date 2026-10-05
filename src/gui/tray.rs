@@ -17,13 +17,11 @@ use crate::app::Message;
 
 const DOCK_ICON_PNG: &[u8] = include_bytes!("../../assets/icons/1-AppIcon-macOS/AppIcon-1024.png");
 /// Menu-bar icons (assets/icons/3-MenuBar), drawn on the menu bar's 22 pt
-/// canvas. While no tunnel is up ("off") the icon is a template, so macOS
-/// picks its colour; while one is connected ("on") it carries a green dot
-/// (#34C759), so the outline is drawn white for a dark menu bar and black
-/// for a light one.
-const MENU_BAR_ICON_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-off-template.svg");
-const MENU_BAR_ACTIVE_DARK_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-on-dark.svg");
-const MENU_BAR_ACTIVE_LIGHT_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-on-light.svg");
+/// canvas. Always the light (white) versions, whatever the appearance;
+/// while a tunnel is connected ("on") the icon carries a green dot
+/// (#34C759).
+const MENU_BAR_OFF_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-off-light.svg");
+const MENU_BAR_ON_SVG: &[u8] = include_bytes!("../../assets/icons/3-MenuBar/vpn-tray-on-light.svg");
 /// The icons are drawn at 2× (44 px, for Retina); tray-icon shows them
 /// 22 pt tall.
 const MENU_BAR_ICON_SCALE: f32 = 2.0;
@@ -37,14 +35,8 @@ const EXIT_ID: &str = "exit";
 pub struct Tray {
     icon: TrayIcon,
     disconnect: MenuItem,
-    /// The icon currently shown.
-    look: Cell<Look>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Look {
-    Idle,
-    Connected { dark: bool },
+    /// Whether the icon currently shown is the connected one.
+    connected: Cell<bool>,
 }
 
 impl Tray {
@@ -58,36 +50,26 @@ impl Tray {
             .map_err(|e| format!("cannot build the menu-bar menu: {e}"))?;
 
         let icon = TrayIconBuilder::new()
-            .with_icon_templated(menu_bar_icon(MENU_BAR_ICON_SVG)?)
+            .with_icon(menu_bar_icon(MENU_BAR_OFF_SVG)?)
             .with_tooltip("wg-gui")
             .with_menu(Box::new(menu))
             .build()
             .map_err(|e| format!("cannot create the menu-bar icon: {e}"))?;
-        Ok(Tray { icon, disconnect, look: Cell::new(Look::Idle) })
+        Ok(Tray { icon, disconnect, connected: Cell::new(false) })
     }
 
     /// "Disconnect" is only offered while a tunnel is up or coming up
     /// (`can_disconnect`); the icon shows the green dot once it is
-    /// connected, outlined to suit a `dark` or light menu bar. Called after
-    /// every message, including appearance changes.
-    pub fn set_status(&self, can_disconnect: bool, connected: bool, dark: bool) {
+    /// connected. Called after every message.
+    pub fn set_status(&self, can_disconnect: bool, connected: bool) {
         self.disconnect.set_enabled(can_disconnect);
-        let look = if connected { Look::Connected { dark } } else { Look::Idle };
-        if look == self.look.get() {
+        if connected == self.connected.get() {
             return;
         }
-        let (svg, template) = match look {
-            Look::Idle => (MENU_BAR_ICON_SVG, true),
-            Look::Connected { dark: true } => (MENU_BAR_ACTIVE_DARK_SVG, false),
-            Look::Connected { dark: false } => (MENU_BAR_ACTIVE_LIGHT_SVG, false),
-        };
-        let shown = menu_bar_icon(svg).and_then(|icon| {
-            let icon = Some(icon);
-            let result = if template { self.icon.set_icon_templated(icon) } else { self.icon.set_icon(icon) };
-            result.map_err(|e| e.to_string())
-        });
+        let svg = if connected { MENU_BAR_ON_SVG } else { MENU_BAR_OFF_SVG };
+        let shown = menu_bar_icon(svg).and_then(|icon| self.icon.set_icon(Some(icon)).map_err(|e| e.to_string()));
         match shown {
-            Ok(()) => self.look.set(look),
+            Ok(()) => self.connected.set(connected),
             Err(e) => eprintln!("warning: cannot update the menu-bar icon: {e}"),
         }
     }
@@ -325,7 +307,7 @@ fn refuse_zoom(delegate: &objc2::runtime::AnyObject) {
 mod tests {
     #[test]
     fn menu_bar_icons_are_drawn() {
-        for svg in [super::MENU_BAR_ICON_SVG, super::MENU_BAR_ACTIVE_DARK_SVG, super::MENU_BAR_ACTIVE_LIGHT_SVG] {
+        for svg in [super::MENU_BAR_OFF_SVG, super::MENU_BAR_ON_SVG] {
             let (rgba, width, height) = super::menu_bar_rgba(svg).unwrap();
             assert_eq!((width, height), (44, 44));
             let opaque = rgba.chunks(4).filter(|px| px[3] > 128).count();

@@ -75,7 +75,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let traffic = card(column![
         row![
             theme::section("TRAFFIC", theme::palette().muted).width(Length::Fill),
-            theme::value(format!("last {} s", graph::SAMPLES), 12.0, theme::palette().muted),
+            theme::value(format!("Last {}s", graph::SAMPLES), 12.0, theme::palette().muted),
         ],
         row![
             legend("Incoming", Direction::In, rate(&history.incoming)),

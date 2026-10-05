@@ -234,11 +234,7 @@ impl App {
         let task = self.handle(message);
         if let Some(tray) = &self.tray {
             let status = self.active.as_ref().map(|a| a.status);
-            tray.set_status(
-                status.is_some_and(|s| s != Status::Disconnecting),
-                status == Some(Status::Connected),
-                theme::is_dark(),
-            );
+            tray.set_status(status.is_some_and(|s| s != Status::Disconnecting), status == Some(Status::Connected));
         }
         task
     }

@@ -3,7 +3,7 @@
 //! changed file instead.
 
 use iced::widget::{column, container, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Color, Element, Length};
 
 use crate::app::{App, Message};
 use crate::theme;
@@ -35,10 +35,11 @@ pub fn view<'a>(app: &'a App, name: &'a str) -> Element<'a, Message> {
             theme::label("Read-only", 12.0, theme::palette().muted),
         ]
         .align_y(Alignment::Center),
-        container(text(&app.config_text).size(12.5).font(theme::MONO).color(theme::palette().bg).line_height(1.6))
+        // Black in both appearances, like a terminal.
+        container(text(&app.config_text).size(12.5).font(theme::MONO).color(theme::LIGHT.bg).line_height(1.6))
             .padding(16)
             .width(Length::Fill)
-            .style(theme::filled(theme::palette().text, 10.0)),
+            .style(theme::filled(Color::BLACK, 10.0)),
     ]
     .spacing(12)
     .padding(MARGIN);

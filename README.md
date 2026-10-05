@@ -10,7 +10,7 @@ brew install --cask nzahasan/tap/wg-gui
 ```
 
 On first launch, macOS asks you to allow wg-gui's helper under
-**System Settings → General → Login Items → Allow in the Background**
+**System Settings → General → Login Items & Extensions → Allow in the Background**
 (the app shows a button that opens it). The helper is the small part that
 runs as root to create the tunnel and set routes and DNS; the app itself
 runs as you. The cask also puts `wg-cli` on your PATH (`sudo wg-cli
@@ -44,11 +44,13 @@ cargo gui && WG_HELPER_SOCKET=/tmp/wg.sock target/release/wg-gui
 
 To test the installed app the way users get it, run
 `scripts/install-test.sh`: it builds the app with `build-app.sh`, installs
-it in `/Applications`, runs the helper as a launchd daemon and starts the
-GUI. Quitting the GUI (or Ctrl-C) runs `scripts/install-test.sh --clean`,
-which uninstalls everything and checks that no launchd job, Login Items
-entry, file, route or DNS change is left; run it by hand after a crashed
-run. `--zap` also deletes `~/.wg-gui`.
+it as the cask does (the app in `/Applications`, `wg-cli` on the PATH),
+runs the helper as a launchd daemon and starts the GUI. Quitting the GUI
+(or Ctrl-C) runs `scripts/install-test.sh --clean`, which undoes all of it
+and checks that no launchd job, Login Items entry, file, route or DNS
+change is left. Profiles and settings the run created are removed too;
+ones you already had are kept. Run `--clean` by hand after a crashed run
+(add `--zap` to also delete your profiles and settings).
 
 ## Releasing
 

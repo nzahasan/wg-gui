@@ -9,17 +9,21 @@ cask "wg-gui" do
   desc "Lightweight userspace WireGuard client with a menu-bar UI"
   homepage "https://github.com/nzahasan/wg-gui"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "wg-gui.app"
   binary "#{appdir}/wg-gui.app/Contents/MacOS/wg-cli"
 
+  # Stops the helper (it restores DNS and routes first) and removes what it
+  # leaves in system folders. --zap also removes your profiles and settings.
   uninstall launchctl: "com.nzahasan.wg-gui.helper",
             quit:      "com.nzahasan.wg-gui",
-            delete:    "/var/run/com.nzahasan.wg-gui.helper.sock"
+            delete:    [
+              "/var/log/wg-gui-helper.log",
+              "/var/run/com.nzahasan.wg-gui.helper.sock",
+            ]
 
   zap trash: [
-    "/var/log/wg-gui-helper.log",
     "~/.wg-gui",
     "~/Library/Caches/com.nzahasan.wg-gui",
     "~/Library/HTTPStorages/com.nzahasan.wg-gui",
@@ -29,7 +33,7 @@ cask "wg-gui" do
 
   caveats <<~EOS
     On first launch, allow wg-gui's helper in
-      System Settings → General → Login Items → Allow in the Background
+      System Settings → General → Login Items & Extensions → Allow in the Background
     It is the part that runs as root to bring tunnels up.
   EOS
 end
