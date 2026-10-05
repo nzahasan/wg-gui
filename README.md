@@ -40,12 +40,21 @@ cargo gui && WG_HELPER_SOCKET=/tmp/wg.sock target/release/wg-gui
 ```
 
 `--dev` skips the helper's signature check; only use it on your own machine.
+`scripts/dev-run.sh` does both steps in one terminal.
+
+To test the installed app the way users get it, run
+`scripts/install-test.sh`: it builds the app with `build-app.sh`, installs
+it in `/Applications`, runs the helper as a launchd daemon and starts the
+GUI. Quitting the GUI (or Ctrl-C) runs `scripts/install-test.sh --clean`,
+which uninstalls everything and checks that no launchd job, Login Items
+entry, file, route or DNS change is left; run it by hand after a crashed
+run. `--zap` also deletes `~/.wg-gui`.
 
 ## Releasing
 
 `packaging/macos/build-app.sh` builds `dist/wg-gui.app` and the zip for the
-cask (`TARGETS=native` builds for this Mac only, ad-hoc signed, when no
-signing identity is set). Pushing a `v*` tag runs
+cask, for this Mac only (`--universal` for Apple Silicon and Intel), ad-hoc
+signed unless a signing identity is set. Pushing a `v*` tag runs
 `.github/workflows/release.yml`, which builds a universal app, signs and
 notarizes it, attaches it to the GitHub release and updates
 `Casks/wg-gui.rb` in `nzahasan/homebrew-tap` from

@@ -59,7 +59,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: packaging/macos/build-app.sh
+        run: packaging/macos/build-app.sh --universal
 
       - uses: softprops/action-gh-release@v2
         with:

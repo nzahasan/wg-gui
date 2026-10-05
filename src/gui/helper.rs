@@ -58,7 +58,9 @@ pub fn uninstall() -> Result<(), String> {
         return Err(format!("The helper was started by hand ({SOCKET_ENV}); stop it there"));
     }
     let service = service().ok_or("This macOS has no SMAppService")?;
-    if status(&service) == NOT_REGISTERED {
+    // Not registered, or not found (e.g. an ad-hoc signed or unbundled
+    // build): there is nothing to remove.
+    if !matches!(status(&service), ENABLED | REQUIRES_APPROVAL) {
         return Ok(());
     }
     let result: Result<(), Retained<NSError>> = unsafe { msg_send![&*service, unregisterAndReturnError: _] };

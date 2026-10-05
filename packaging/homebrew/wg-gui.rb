@@ -21,6 +21,10 @@ cask "wg-gui" do
   zap trash: [
     "/var/log/wg-gui-helper.log",
     "~/.wg-gui",
+    "~/Library/Caches/com.nzahasan.wg-gui",
+    "~/Library/HTTPStorages/com.nzahasan.wg-gui",
+    "~/Library/Preferences/com.nzahasan.wg-gui.plist",
+    "~/Library/Saved Application State/com.nzahasan.wg-gui.savedState",
   ]
 
   caveats <<~EOS
