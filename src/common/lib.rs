@@ -10,6 +10,7 @@ pub mod connection;
 pub mod ip;
 pub mod ipc;
 pub mod netconfig;
+pub mod netwatch;
 pub mod noise;
 pub mod session;
 pub mod timers;

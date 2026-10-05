@@ -5,7 +5,7 @@
 //! ```text
 //! UP <len>\n<len bytes of config text>   -> STARTED <tun> <mtu> <dns 0|1> <endpoint> <n>\n
 //!                                           ROUTE <destination> <gateway> <interface>\n  (n times)
-//! STATS\n                                -> STATS <rx> <tx> <rx pkts> <tx pkts> <handshake age ms|->\n
+//! STATS\n                                -> STATS <rx> <tx> <rx pkts> <tx pkts> <handshake age ms|-> <up|stale|offline>\n
 //! DOWN\n                                 -> OK\n
 //! any                                    -> ERR <message>\n
 //! ```
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::netconfig::Route;
-use crate::tunnel::Stats;
+use crate::tunnel::{LinkState, Stats};
 
 /// Bundle identifier of the app; the helper only serves code signed with it.
 pub const APP_ID: &str = "com.nzahasan.wg-gui";
@@ -122,7 +122,19 @@ pub fn write_response(w: &mut impl Write, response: &Response) -> io::Result<()>
         }
         Response::Stats(s) => {
             let age = s.last_handshake.map_or("-".to_string(), |t| t.elapsed().as_millis().to_string());
-            writeln!(w, "STATS {} {} {} {} {age}", s.rx_bytes, s.tx_bytes, s.rx_packets, s.tx_packets)?;
+            writeln!(
+                w,
+                "STATS {} {} {} {} {age} {}",
+                s.rx_bytes,
+                s.tx_bytes,
+                s.rx_packets,
+                s.tx_packets,
+                match s.link {
+                    LinkState::Up => "up",
+                    LinkState::Stale => "stale",
+                    LinkState::Offline => "offline",
+                }
+            )?;
         }
         Response::Ok => w.write_all(b"OK\n")?,
         Response::Error(message) => writeln!(w, "ERR {}", message.replace(['\r', '\n'], " "))?,
@@ -165,7 +177,7 @@ pub fn read_response(r: &mut impl BufRead) -> io::Result<Response> {
                 routes,
             })
         }
-        ("STATS", [rx, tx, rx_packets, tx_packets, age]) => Response::Stats(Stats {
+        ("STATS", [rx, tx, rx_packets, tx_packets, age, link]) => Response::Stats(Stats {
             rx_bytes: number(rx)?,
             tx_bytes: number(tx)?,
             rx_packets: number(rx_packets)?,
@@ -173,6 +185,12 @@ pub fn read_response(r: &mut impl BufRead) -> io::Result<Response> {
             last_handshake: match *age {
                 "-" => None,
                 ms => Instant::now().checked_sub(Duration::from_millis(number(ms)?)),
+            },
+            link: match *link {
+                "up" => LinkState::Up,
+                "stale" => LinkState::Stale,
+                "offline" => LinkState::Offline,
+                other => return Err(invalid(&format!("bad link state: {other}"))),
             },
         }),
         _ => return Err(invalid(&format!("unexpected reply: {line}"))),
@@ -316,17 +334,19 @@ mod tests {
             rx_packets: 3,
             tx_packets: 4,
             last_handshake: Some(Instant::now() - Duration::from_secs(5)),
+            link: LinkState::Stale,
         };
         match round_trip(&Response::Stats(stats)) {
             Response::Stats(s) => {
                 assert_eq!((s.rx_bytes, s.tx_bytes, s.rx_packets, s.tx_packets), (1 << 40, 7, 3, 4));
+                assert_eq!(s.link, LinkState::Stale);
                 let age = s.last_handshake.unwrap().elapsed().as_secs();
                 assert!((4..=6).contains(&age), "age {age}");
             }
             other => panic!("{other:?}"),
         }
         match round_trip(&Response::Stats(Stats::default())) {
-            Response::Stats(s) => assert!(s.last_handshake.is_none()),
+            Response::Stats(s) => assert!(s.last_handshake.is_none() && s.link == LinkState::Up),
             other => panic!("{other:?}"),
         }
         match round_trip(&Response::Error("no\nluck".to_string())) {

@@ -1,6 +1,6 @@
 //! Screen 1 · Profiles: connected profile on top, the rest below.
 
-use iced::widget::{Column, button, column, container, row, space, stack, text};
+use iced::widget::{Column, button, column, container, hover, row, space, stack, text, tooltip};
 use iced::{Alignment, Element, Length, Padding};
 
 use crate::app::{App, Message, Status};
@@ -112,6 +112,12 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
             ]
             .into(),
             Status::Connecting => text("Connecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().ok).into(),
+            Status::Reconnecting => {
+                text("Reconnecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().warn).into()
+            }
+            Status::Offline => {
+                text("Waiting for network…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().warn).into()
+            }
             Status::Disconnecting => text("Disconnecting…").size(12.5).font(theme::SANS_MEDIUM).color(theme::palette().muted).into(),
         };
         lines = lines.push(status);
@@ -158,7 +164,7 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
         .spacing(4)
         .align_y(Alignment::Center);
     if !connected {
-        actions = actions.push(action(icons::trash(16.0, theme::accent()), "Delete", theme::accent(), Message::Delete(profile.name.clone())));
+        actions = actions.push(space().width(Length::Fill)).push(delete_button(&profile.name));
     }
 
     // The 1 px padding keeps the hover wash inside the border.
@@ -167,7 +173,11 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
         theme::rule(theme::palette().grid),
         // Action buttons have 10 px of their own padding; together they
         // put the icons in line with the profile name.
-        container(actions).padding(Padding { top: 6.0, right: CARD_INSET - 10.0, bottom: 6.0, left: CARD_INSET - 10.0 }),
+        // The delete button is a 32 px square with the icon centred, so it
+        // needs less inset on the right to line up with the toggle.
+        container(actions)
+            .width(Length::Fill)
+            .padding(Padding { top: 6.0, right: CARD_INSET - 8.0, bottom: 6.0, left: CARD_INSET - 10.0 }),
     ])
     .padding(1)
     .width(Length::Fill)
@@ -189,6 +199,27 @@ fn action<'a>(icon: iced::widget::Svg<'a>, label: &'a str, color: iced::Color, m
     .padding(0)
     .on_press(message)
     .style(move |theme, status| iced::widget::button::Style { text_color: color, ..theme::icon_button(theme, status) })
+    .into()
+}
+
+/// Deleting a profile: only a quiet trash icon, which turns the danger
+/// colour on hover, so the destructive action does not compete with the
+/// others but is unmistakable when aimed at.
+fn delete_button<'a>(name: &str) -> Element<'a, Message> {
+    let trash = |color, style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style| {
+        button(container(icons::trash(16.0, color)).center(32))
+            .padding(0)
+            .on_press(Message::Delete(name.to_string()))
+            .style(style)
+    };
+    let idle = trash(theme::palette().muted, theme::bare);
+    let aimed = trash(theme::palette().danger, theme::danger_button);
+    tooltip(
+        hover(idle, aimed),
+        container(text("Delete profile").size(12)).padding([4, 8]).style(theme::tooltip),
+        tooltip::Position::Top,
+    )
+    .gap(4)
     .into()
 }
 

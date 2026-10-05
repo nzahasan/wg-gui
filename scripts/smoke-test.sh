@@ -74,7 +74,24 @@ out=$("${CLIENT[@]}" up-expect-error "$CONF" 2>&1)
 [[ $(field REFUSED "$out") == yes* ]] && pass "refused: $(field REFUSED "$out" | cut -c6-)" || fail "second client: $out"
 wait $holder
 
-echo "==> 4. stopping the helper"
+echo "==> 4. network change: the endpoint route disappears (as when its interface goes away)"
+"${CLIENT[@]}" hold "$CONF" 14 >/tmp/wg-gui-smoke-hold.log 2>&1 &
+holder=$!
+sleep 4
+endpoint=$(sed -n 's/^ENDPOINT=//p' /tmp/wg-gui-smoke-hold.log | sed 's/:[0-9]*$//; s/^\[//; s/\]$//')
+if [[ -z $endpoint ]]; then
+    fail "tunnel did not come up: $(cat /tmp/wg-gui-smoke-hold.log)"
+elif ! netstat -rn | awk '{print $1}' | grep -qx "$endpoint"; then
+    echo "  skip no endpoint route to remove (split tunnel for $endpoint's address family)"
+else
+    sudo route -q -n delete "$endpoint" >/dev/null
+    sleep 5 # the watcher waits 1 s for things to settle, then re-pins and handshakes
+    netstat -rn | awk '{print $1}' | grep -qx "$endpoint" && pass "endpoint route restored" || fail "endpoint route not restored"
+    grep -q "network changed" "$LOG" && pass "helper noticed the change" || fail "no 'network changed' in the helper log"
+fi
+wait $holder
+
+echo "==> 5. stopping the helper"
 stop_helper
 for _ in $(seq 50); do [[ -S $SOCKET ]] || break; sleep 0.1; done
 [[ -S $SOCKET ]] && fail "socket left behind" || pass "helper exited and removed its socket"

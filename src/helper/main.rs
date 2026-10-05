@@ -187,10 +187,10 @@ fn handle(id: u64, request: Request) -> Response {
                 Ok(connection) => {
                     let started = Started {
                         tun_name: connection.tun_name.clone(),
-                        mtu: connection.undo.mtu,
-                        dns_changed: connection.undo.dns_changed(),
-                        endpoint: connection.config.peer.endpoint,
-                        routes: connection.undo.routes.clone(),
+                        mtu: connection.mtu(),
+                        dns_changed: connection.dns_changed(),
+                        endpoint: connection.endpoint(),
+                        routes: connection.routes(),
                     };
                     eprintln!("wg-helper: client {id} brought up {}", started.tun_name);
                     *tunnel = Some((id, connection));

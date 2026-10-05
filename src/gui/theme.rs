@@ -22,6 +22,8 @@ pub struct Palette {
     pub warn_toggle: Color,
     pub error: Color,
     pub error_tint: Color,
+    /// Destructive actions (delete), shown on hover: Apple's system red.
+    pub danger: Color,
     pub input_border: Color,
     pub toggle_off: Color,
     pub grid: Color,
@@ -48,6 +50,9 @@ pub const LIGHT: Palette = Palette {
     warn_toggle: Color::from_rgb8(0xC9, 0x8A, 0x1A),
     error: Color::from_rgb8(0x9F, 0x1D, 0x1D),
     error_tint: Color::from_rgb8(0xFD, 0xEC, 0xEC),
+    // systemRed's high-contrast light variant; plain #FF3B30 is too faint
+    // for a small icon on white.
+    danger: Color::from_rgb8(0xD7, 0x00, 0x15),
     input_border: Color::from_rgb8(0xC2, 0xBA, 0xBA),
     toggle_off: Color::from_rgb8(0xC9, 0xC2, 0xC2),
     grid: Color::from_rgb8(0xF1, 0xEC, 0xEC),
@@ -78,6 +83,7 @@ pub const DARK: Palette = Palette {
     warn_toggle: Color::from_rgb8(0xE0, 0xA0, 0x30),
     error: Color::from_rgb8(0xFF, 0x6B, 0x63),
     error_tint: Color::from_rgb8(0x3A, 0x1D, 0x1D),
+    danger: Color::from_rgb8(0xFF, 0x45, 0x3A),
     input_border: Color::from_rgb8(0x5A, 0x53, 0x53),
     toggle_off: Color::from_rgb8(0x4A, 0x44, 0x44),
     grid: Color::from_rgb8(0x2E, 0x2A, 0x2A),
@@ -336,6 +342,28 @@ pub fn icon_button(_: &Theme, status: button::Status) -> button::Style {
     button::Style { background, text_color: palette().text, border: Border::default().rounded(8), ..Default::default() }
 }
 
+/// An icon button for a destructive action, while hovered: the danger
+/// colour's wash behind the (danger-coloured) icon.
+pub fn danger_button(_: &Theme, _: button::Status) -> button::Style {
+    let p = palette();
+    button::Style {
+        background: Some(mix(p.danger, p.surface, 0.88).into()),
+        text_color: p.danger,
+        border: Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+/// A floating label, e.g. the tooltip on an icon-only button.
+pub fn tooltip(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(palette().toast.into()),
+        text_color: Some(palette().toast_text),
+        border: Border { radius: 6.0.into(), ..Default::default() },
+        ..Default::default()
+    }
+}
+
 /// The clickable body of a profile card: rounded only at the top, where
 /// it meets the card's corners, and inset so the border stays visible.
 pub fn row_button(_: &Theme, status: button::Status) -> button::Style {
@@ -504,6 +532,10 @@ mod tests {
         assert!(contrast(DARK.text, DARK.surface) >= 7.0);
         assert!(contrast(DARK.muted, DARK.surface) >= 4.5);
         assert!(contrast(LIGHT.muted, LIGHT.surface) >= 4.5);
+        // The danger icon is a non-text graphic: 3:1 against its hover wash.
+        for p in [&LIGHT, &DARK] {
+            assert!(contrast(p.danger, mix(p.danger, p.surface, 0.88)) >= 3.0, "{:?}", p.danger);
+        }
         set_dark(false);
         assert_eq!(hex(palette().bg), hex(LIGHT.bg));
     }

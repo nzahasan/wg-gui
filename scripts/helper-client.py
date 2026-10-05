@@ -45,8 +45,9 @@ class Helper:
         self.sock.sendall(b"STATS\n")
         reply = self.line()
         assert reply.startswith("STATS "), reply
-        rx, tx, rxp, txp, age = reply.split(" ")[1:]
-        return {"rx": int(rx), "tx": int(tx), "rx_packets": int(rxp), "tx_packets": int(txp), "age": age}
+        rx, tx, rxp, txp, age, link = reply.split(" ")[1:]
+        return {"rx": int(rx), "tx": int(tx), "rx_packets": int(rxp), "tx_packets": int(txp), "age": age,
+                "link": link}
 
     def down(self):
         self.sock.sendall(b"DOWN\n")

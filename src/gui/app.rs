@@ -13,7 +13,7 @@ use iced::{Color, Element, Event, Length, Subscription, Task, Vector, event, win
 use wg_common::config::{self, Cidr};
 use wg_common::ipc::{HelperClient, Started};
 use wg_common::netconfig::Route;
-use wg_common::tunnel::Stats;
+use wg_common::tunnel::{LinkState, Stats};
 
 use crate::graph::History;
 use crate::helper::{self, HelperState};
@@ -54,6 +54,12 @@ pub enum Status {
     /// Bringing the tunnel up, or up but no handshake yet.
     Connecting,
     Connected,
+    /// Was connected, but the server stopped answering (a handshake
+    /// unanswered, or traffic with no reply); the tunnel keeps trying.
+    Reconnecting,
+    /// Was connected, but there is no network (Wi-Fi off, cable out).
+    /// The tunnel stays configured and picks up when the network returns.
+    Offline,
     Disconnecting,
 }
 
@@ -658,8 +664,26 @@ impl App {
         }
         active.last_sample = Some((now, stats));
         active.stats = stats;
-        if active.status == Status::Connecting && stats.last_handshake.is_some() {
-            active.status = Status::Connected;
+        let next = match active.status {
+            Status::Connecting if stats.last_handshake.is_some() => Status::Connected,
+            // Once connected, the status follows the link.
+            Status::Connected | Status::Reconnecting | Status::Offline => match stats.link {
+                LinkState::Up => Status::Connected,
+                LinkState::Stale => Status::Reconnecting,
+                LinkState::Offline => Status::Offline,
+            },
+            status => status,
+        };
+        if next != active.status {
+            let was_connected = active.status != Status::Connecting;
+            active.status = next;
+            let profile = active.profile.clone();
+            match next {
+                Status::Reconnecting => self.log(format!("lost contact with \"{profile}\", reconnecting")),
+                Status::Offline => self.log(format!("network gone, \"{profile}\" waiting for it")),
+                Status::Connected if was_connected => self.log(format!("reconnected \"{profile}\"")),
+                _ => {}
+            }
         }
         Task::none()
     }

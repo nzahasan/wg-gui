@@ -104,6 +104,29 @@ fn apply(tun_name: &str, config: &Config, undo: &mut Undo) -> Result<(), String>
     Ok(())
 }
 
+/// After a network change: points the endpoint's host route at the
+/// current default gateway, moving it to `endpoint` if the endpoint's
+/// address changed, and updates `undo` to match. A split tunnel pins no
+/// route, so there is nothing to do.
+pub fn repin_endpoint(undo: &mut Undo, endpoint: IpAddr) -> Result<(), String> {
+    let Some(old) = undo.endpoint_route else {
+        return Ok(());
+    };
+    let gateway = default_gateway(endpoint.is_ipv4())?;
+    // The old route may already be gone, along with its interface.
+    let _ = capture(&["route", "-q", "-n", "delete", family_flag(old), &old.to_string()]);
+    run(&["route", "-q", "-n", "add", family_flag(endpoint), &endpoint.to_string(), "-gateway", &gateway])?;
+    undo.endpoint_route = Some(endpoint);
+
+    let interface = outgoing_interface(endpoint).unwrap_or_else(|| "?".to_string());
+    let host_prefix = if endpoint.is_ipv4() { 32 } else { 128 };
+    let old_destination = format!("{old}/{}", if old.is_ipv4() { 32 } else { 128 });
+    if let Some(route) = undo.routes.iter_mut().find(|r| r.destination == old_destination) {
+        *route = Route { destination: format!("{endpoint}/{host_prefix}"), gateway, interface };
+    }
+    Ok(())
+}
+
 pub fn cleanup(undo: &Undo) {
     // Errors here are only reported; there is nothing more we can do.
     for (service, servers) in &undo.dns_backup {
@@ -156,8 +179,9 @@ fn add_endpoint_route(endpoint_ip: IpAddr) -> Result<String, String> {
     Ok(gateway)
 }
 
-/// Reads the current default gateway from `route -n get default`.
-fn default_gateway(ipv4: bool) -> Result<String, String> {
+/// Reads the current default gateway from `route -n get default`. Our
+/// half-width routes do not hide it: "default" asks for the 0/0 entry.
+pub fn default_gateway(ipv4: bool) -> Result<String, String> {
     let family = if ipv4 { "-inet" } else { "-inet6" };
     let output = capture(&["route", "-n", "get", family, "default"])?;
     for line in output.lines() {

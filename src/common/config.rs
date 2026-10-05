@@ -243,7 +243,9 @@ fn parse_dns(text: &str) -> Result<IpAddr, String> {
     text.parse().map_err(|_| format!("bad DNS server '{text}'"))
 }
 
-fn resolve_endpoint(text: &str) -> Result<SocketAddr, String> {
+/// Looks up "host:port"; also used to follow an endpoint whose address
+/// changes while the tunnel is up.
+pub fn resolve_endpoint(text: &str) -> Result<SocketAddr, String> {
     let mut addrs = text
         .to_socket_addrs()
         .map_err(|e| format!("cannot resolve endpoint '{text}': {e}"))?;

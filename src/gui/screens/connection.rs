@@ -31,6 +31,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let (label, color, track) = match active.status {
         Status::Connected => ("CONNECTED", theme::palette().ok, theme::accent()),
         Status::Connecting => ("CONNECTING…", theme::palette().warn, theme::palette().warn_toggle),
+        Status::Reconnecting => ("RECONNECTING…", theme::palette().warn, theme::palette().warn_toggle),
+        Status::Offline => ("WAITING FOR NETWORK…", theme::palette().warn, theme::palette().warn_toggle),
         Status::Disconnecting => ("DISCONNECTING…", theme::palette().muted, theme::palette().toggle_off),
     };
     let mut status_line = row![text(label).size(12).font(theme::SANS_BOLD).color(color)].spacing(8).align_y(Alignment::Center);
