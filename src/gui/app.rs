@@ -99,6 +99,8 @@ impl Active {
 #[derive(Debug, Clone)]
 pub struct Pending {
     pub file_name: String,
+    /// Where the file was imported from.
+    pub source: PathBuf,
     pub name: String,
     pub text: String,
     pub summary: config::Summary,
@@ -254,7 +256,7 @@ impl App {
                 self.import_error = None;
             }
             Message::ViewConfig(name) => {
-                let Some(profile) = self.profile(&name) else {
+                let Some(profile) = self.profile(&name).filter(|p| !p.stale) else {
                     return Task::none();
                 };
                 self.config_text = match std::fs::read_to_string(&profile.path) {
@@ -471,6 +473,12 @@ impl App {
     // -- connecting --------------------------------------------------------
 
     fn connect(&mut self, name: String) -> Task<Message> {
+        // The file may have gone since the list was read.
+        if self.profile(&name).is_some_and(|p| p.stale || !p.path.exists()) {
+            self.reload();
+            self.show_toast(format!("The config file of “{name}” is missing"));
+            return Task::none();
+        }
         self.helper = helper::state();
         match &self.helper {
             HelperState::Ready => {}
@@ -708,9 +716,14 @@ impl App {
             let parsed = std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|text| config::summary(&text).map(|summary| (text, summary)));
+            let existing = parsed.as_ref().ok().and_then(|(text, _)| self.store.as_ref()?.find_duplicate(text));
             match parsed {
+                Ok(_) if existing.is_some() => errors.push(format!(
+                    "{file_name}: configuration already exists as profile “{}”",
+                    existing.unwrap_or_default()
+                )),
                 Ok((text, summary)) => {
-                    read.push(Pending { name: storage::suggested_name(&path), file_name, text, summary })
+                    read.push(Pending { name: storage::suggested_name(&path), file_name, text, summary, source: path })
                 }
                 Err(e) => errors.push(format!("{file_name}: {e}")),
             }
@@ -737,7 +750,9 @@ impl App {
                 } else {
                     self.import_error = Some(errors.join("\n"));
                 }
-                self.show_toast(format!("{} profiles imported", added.len()));
+                if !added.is_empty() {
+                    self.show_toast(format!("{} profiles imported", added.len()));
+                }
             }
         }
     }
@@ -767,7 +782,7 @@ impl App {
     fn save(&self, pending: &Pending) -> Result<String, String> {
         let store = self.store.as_ref().ok_or("no profile directory")?;
         let name = if pending.name.trim().is_empty() { &pending.file_name } else { &pending.name };
-        store.import(name, &pending.text)
+        store.import(name, &pending.text, Some(&pending.source))
     }
 
     fn reload(&mut self) {

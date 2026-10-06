@@ -24,6 +24,7 @@ cask "wg-gui" do
             ]
 
   zap trash: [
+    "~/.config/wg-gui",
     "~/.wg-gui",
     "~/Library/Caches/com.nzahasan.wg-gui",
     "~/Library/HTTPStorages/com.nzahasan.wg-gui",

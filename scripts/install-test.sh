@@ -9,7 +9,7 @@
 # Usage: scripts/install-test.sh
 #        scripts/install-test.sh --clean [--zap]
 #   --clean  only uninstall and check; also cleans up after a crashed run
-#   --zap    also delete your profiles (~/.wg-gui, with their keys) and
+#   --zap    also delete your profiles (~/.config/wg-gui, with their keys) and
 #            wg-gui's settings, as `brew uninstall --zap` does
 #
 # Unsigned, the helper runs with --dev and accepts any local client. With
@@ -32,6 +32,7 @@ BUNDLE_ID=com.nzahasan.wg-gui
 CLI_LINK=$(brew --prefix 2>/dev/null || echo /opt/homebrew)/bin/wg-cli
 # What the GUI creates in your home folder; the cask's `zap` list.
 USER_DATA=(
+    "$HOME/.config/wg-gui"
     "$HOME/.wg-gui"
     "$HOME/Library/Caches/$BUNDLE_ID"
     "$HOME/Library/HTTPStorages/$BUNDLE_ID"

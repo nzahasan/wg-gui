@@ -119,6 +119,17 @@ pub fn summary(text: &str) -> Result<Summary, String> {
     })
 }
 
+/// Whether two configs describe the same tunnel: same private key, peer
+/// and endpoint. Unreadable configs are never the same.
+pub fn same_tunnel(a: &str, b: &str) -> bool {
+    match (parse_unresolved(a), parse_unresolved(b)) {
+        (Ok((a, a_endpoint)), Ok((b, b_endpoint))) => {
+            a.private_key == b.private_key && a.peer.public_key == b.peer.public_key && a_endpoint == b_endpoint
+        }
+        _ => false,
+    }
+}
+
 /// The config with a placeholder endpoint, and the Endpoint text.
 fn parse_unresolved(text: &str) -> Result<(Config, String), String> {
     // Raw values collected while reading the file; validated at the end.
@@ -306,6 +317,16 @@ PersistentKeepalive = 25
 
     fn summary_of_endpoint(endpoint: &str) -> Summary {
         summary(&SAMPLE.replace("127.0.0.1:51820", endpoint)).unwrap()
+    }
+
+    #[test]
+    fn same_tunnel_ignores_layout() {
+        let reformatted = SAMPLE.replace("# a comment", "").replace("MTU = 1400", "MTU = 1280").replace(" = ", "=");
+        assert!(same_tunnel(SAMPLE, &reformatted));
+        let other_peer = SAMPLE.replace("PublicKey = AAEC", "PublicKey = AQEC");
+        assert!(!same_tunnel(SAMPLE, &other_peer));
+        assert!(!same_tunnel(SAMPLE, &SAMPLE.replace("51820", "51821")));
+        assert!(!same_tunnel("a", "a"));
     }
 
     #[test]

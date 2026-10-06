@@ -3,8 +3,9 @@
 //! Runs as the user; tunnels are brought up by `wg-helper`, the root
 //! daemon bundled with the app (see `helper.rs`).
 //!
-//! Profiles live in ~/.wg-gui. Closing the window (or Ctrl-C in the
-//! terminal) takes the tunnel down and restores DNS and routes first.
+//! Profiles live in ~/.config/wg-gui, listed in wg-profiles.conf.
+//! Closing the window (or Ctrl-C in the terminal) takes the tunnel down
+//! and restores DNS and routes first.
 
 mod app;
 mod format;
@@ -25,6 +26,8 @@ use app::App;
 
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
+const HSIZE: f32 = 400.0;
+const VSIZE: f32 = 620.0;
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -51,7 +54,7 @@ fn main() -> iced::Result {
         .title("wg-gui")
         .subscription(App::subscription)
         .window(window::Settings {
-            size: Size::new(400.0, 600.0),
+            size: Size::new(HSIZE, VSIZE),
             resizable: false,
             exit_on_close_request: false,
             ..window::Settings::default()

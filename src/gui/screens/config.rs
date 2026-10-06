@@ -2,7 +2,7 @@
 //! with its keys hidden. Profiles are not edited in the app; re-import a
 //! changed file instead.
 
-use iced::widget::{column, container, row, text};
+use iced::widget::{Column, column, container, row, text};
 use iced::{Alignment, Color, Element, Length};
 
 use crate::app::{App, Message};
@@ -28,21 +28,33 @@ pub fn view<'a>(app: &'a App, name: &'a str) -> Element<'a, Message> {
         .padding(bar_padding(10.0)),
     );
 
-    let file_name = app.profile(name).map(|p| p.path.file_name().unwrap_or_default().to_string_lossy().into_owned());
-    let body = column![
+    let profile = app.profile(name);
+    let file_name = profile.map(|p| p.path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+    let mut body = Column::new().spacing(12).padding(MARGIN).push(
         row![
             text(file_name.unwrap_or_default()).size(13).font(theme::SANS_MEDIUM).color(theme::palette().text).width(Length::Fill),
             theme::label("Read-only", 12.0, theme::palette().muted),
         ]
         .align_y(Alignment::Center),
-        // Black in both appearances, like a terminal.
+    );
+    // Where the copy came from, as recorded in the index.
+    let origin: Vec<String> = profile
+        .into_iter()
+        .flat_map(|p| {
+            [p.added.as_ref().map(|added| format!("Added {added}")), p.comment.clone()]
+        })
+        .flatten()
+        .collect();
+    if !origin.is_empty() {
+        body = body.push(theme::label(origin.join("\n"), 12.0, theme::palette().muted));
+    }
+    // Black in both appearances, like a terminal.
+    let body = body.push(
         container(text(&app.config_text).size(12.5).font(theme::MONO).color(theme::LIGHT.bg).line_height(1.6))
             .padding(16)
             .width(Length::Fill)
             .style(theme::filled(Color::BLACK, 10.0)),
-    ]
-    .spacing(12)
-    .padding(MARGIN);
+    );
 
     column![header, scroll(body)].height(Length::Fill).into()
 }

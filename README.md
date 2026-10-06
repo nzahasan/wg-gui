@@ -17,13 +17,16 @@ runs as you. The cask also puts `wg-cli` on your PATH (`sudo wg-cli
 profile.conf`).
 
 Uninstall with `brew uninstall --cask wg-gui` (add `--zap` to also remove
-your profiles in `~/.wg-gui`). If you installed by hand instead, choose
-**Uninstall Helper…** in the menu-bar menu before deleting the app; it
-stops the helper and removes it from Login Items.
+your profiles in `~/.config/wg-gui`). If you installed by hand instead,
+choose **Uninstall Helper…** in the menu-bar menu before deleting the
+app; it stops the helper and removes it from Login Items.
 
 ## How it is put together
 
-- `wg-gui`: the app, running as the user. Profiles live in `~/.wg-gui`.
+- `wg-gui`: the app, running as the user. Imported profiles are copied to
+  `~/.config/wg-gui/profiles` and listed in
+  `~/.config/wg-gui/wg-profiles.conf`, the one place the app looks for
+  config files. An older `~/.wg-gui` is moved there on first start.
 - `wg-helper`: a root launchd daemon inside `wg-gui.app`, registered with
   SMAppService. It listens on `/var/run/com.nzahasan.wg-gui.helper.sock`
   and only serves the wg-gui app signed by our team. A tunnel goes down

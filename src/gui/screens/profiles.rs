@@ -94,6 +94,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Element<'a, Message> {
     // Host in Plex Sans, the port (a number) in Chivo Mono.
     let meta: Element<'a, Message> = match &profile.summary {
+        _ if profile.stale => theme::label("Invalid config: the config file is missing", 12.5, theme::palette().error).into(),
         Ok(s) => row![
             text(format!("{} · UDP ", s.host)).size(12.5).color(theme::palette().muted),
             theme::mono(s.port.to_string(), 12.5).color(theme::palette().muted),
@@ -102,7 +103,8 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
         Err(e) => theme::label(format!("Invalid config: {e}"), 12.5, theme::palette().error).into(),
     };
 
-    let mut lines = column![text(&profile.name).size(15).font(theme::SANS_SEMIBOLD).color(theme::palette().text)].spacing(3);
+    let name_color = if profile.stale { theme::palette().muted } else { theme::palette().text };
+    let mut lines = column![text(&profile.name).size(15).font(theme::SANS_SEMIBOLD).color(name_color)].spacing(3);
     if connected {
         let active = app.active.as_ref().expect("connected implies active");
         let status: Element<'a, Message> = match active.status {
@@ -143,7 +145,7 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
     )
     .padding(0)
     .width(Length::Fill)
-    .on_press(Message::ProfilePressed(profile.name.clone()))
+    .on_press_maybe((!profile.stale).then(|| Message::ProfilePressed(profile.name.clone())))
     .style(theme::row_button);
 
     let switch_message = if connected {
@@ -160,16 +162,20 @@ fn profile_row<'a>(app: &'a App, profile: &'a Profile, connected: bool) -> Eleme
         .center_y(Length::Fill)
         .padding(Padding { right: CARD_INSET, ..Padding::ZERO });
 
-    let mut actions = row![action(icons::document(16.0, theme::palette().text), "View config", theme::palette().text, Message::ViewConfig(profile.name.clone()))]
-        .spacing(4)
-        .align_y(Alignment::Center);
+    // A stale profile (its config file is gone) can only be deleted: no
+    // toggle and no "View config".
+    let mut actions = row![].spacing(4).align_y(Alignment::Center);
+    if !profile.stale {
+        actions = actions.push(action(icons::document(16.0, theme::palette().text), "View config", theme::palette().text, Message::ViewConfig(profile.name.clone())));
+    }
     if !connected {
         actions = actions.push(space().width(Length::Fill)).push(delete_button(&profile.name));
     }
+    let top: Element<'a, Message> = if profile.stale { body.into() } else { stack![body, switch_layer].into() };
 
     // The 1 px padding keeps the hover wash inside the border.
     container(column![
-        stack![body, switch_layer],
+        top,
         theme::rule(theme::palette().grid),
         // Action buttons have 10 px of their own padding; together they
         // put the icons in line with the profile name.
