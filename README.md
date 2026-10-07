@@ -1,84 +1,82 @@
-# wg-gui
+# wg-gui: WireGuard VPN Client for macOS
 
-A small userspace WireGuard client for macOS, with a desktop window and a
-menu-bar icon.
+wg-gui is a free and open source WireGuard VPN client for Mac. It lets you import a WireGuard `.conf` file and connect to your VPN with one click. It has a small app window and an icon in the menu bar. It runs on macOS 13 Ventura or newer, on Apple Silicon (M1, M2, M3, M4) and Intel Macs.
 
-## Install
+<img src="screenshots/wireguard-mac-connection.png" alt="wg-gui WireGuard VPN client for macOS connected to a VPN server with a live traffic graph" width="320">
 
-```sh
-brew install --cask nzahasan/tap/wg-gui
-```
+## Features
 
-On first launch, macOS asks you to allow wg-gui's helper under
-**System Settings → General → Login Items & Extensions → Allow in the Background**
-(the app shows a button that opens it). The helper is the small part that
-runs as root to create the tunnel and set routes and DNS; the app itself
-runs as you. The cask also puts `wg-cli` on your PATH (`sudo wg-cli
-profile.conf`).
+- Import WireGuard `.conf` files by drag and drop
+- Create a new WireGuard profile and generate keys in the app
+- Connect and disconnect with one click
+- See live upload and download speed while connected
+- Menu bar icon that shows when the VPN is on
+- Light and dark mode
+- Reconnects by itself when your Wi-Fi or network drops and comes back
+- Includes `wg-cli`, a WireGuard command line tool for the terminal
+- Written in Rust, with its own WireGuard code. It does not need wireguard-tools, wireguard-go or the Mac App Store.
 
-Uninstall with `brew uninstall --cask wg-gui` (add `--zap` to also remove
-your profiles in `~/.config/wg-gui`). If you installed by hand instead,
-choose **Uninstall Helper…** in the menu-bar menu before deleting the
-app; it stops the helper and removes it from Login Items.
+## Requirements
 
-### From source
+- macOS 13 Ventura or newer
+- Apple Silicon or Intel Mac
+- An admin password (the VPN helper needs admin rights)
 
-```sh
-scripts/install.sh                     # build and install (again to upgrade)
-scripts/install.sh --uninstall [--zap] # remove it; --zap also deletes profiles
-```
+## How to install wg-gui on macOS from source
 
-It installs what the build needs if it is missing (the Xcode Command Line
-Tools, Homebrew, and Rust from Homebrew), builds the app, puts it in
-`/Applications` with `wg-cli` on your PATH, and runs the helper as a
-launchd daemon. Unless you sign the build (`SIGN_IDENTITY` and `WG_TEAM_ID`,
-see `packaging/macos/build-app.sh`), the helper runs with `--dev` and
-accepts any local client.
-
-## How it is put together
-
-- `wg-gui`: the app, running as the user. Imported profiles are copied to
-  `~/.config/wg-gui/profiles` and listed in
-  `~/.config/wg-gui/wg-profiles.conf`, the one place the app looks for
-  config files. An older `~/.wg-gui` is moved there on first start.
-- `wg-helper`: a root launchd daemon inside `wg-gui.app`, registered with
-  SMAppService. It listens on `/var/run/com.nzahasan.wg-gui.helper.sock`
-  and only serves the wg-gui app signed by our team. A tunnel goes down
-  when the app that started it disconnects or quits.
-- `wg-cli`: the same tunnel from a terminal, run with sudo.
-
-## Development
+Open the Terminal app and run:
 
 ```sh
-cargo test --features gui
-cargo helper && sudo target/release/wg-helper --dev --socket /tmp/wg.sock
-# in another terminal
-cargo gui && WG_HELPER_SOCKET=/tmp/wg.sock target/release/wg-gui
+git clone https://github.com/nzahasan/wg-gui.git
+cd wg-gui
+scripts/install.sh
 ```
 
-`--dev` skips the helper's signature check; only use it on your own machine.
-`scripts/dev-run.sh` does both steps in one terminal.
+The script installs anything the build needs (Xcode Command Line Tools, Homebrew and Rust), builds the app and puts it in your Applications folder. It asks for your password because the VPN helper needs admin rights.
 
-To test the installed app the way users get it, run
-`scripts/install-test.sh`: it builds the app with `build-app.sh`, installs
-it as the cask does (the app in `/Applications`, `wg-cli` on the PATH),
-runs the helper as a launchd daemon and starts the GUI. Quitting the GUI
-(or Ctrl-C) runs `scripts/install-test.sh --clean`, which undoes all of it
-and checks that no launchd job, Login Items entry, file, route or DNS
-change is left. Profiles and settings the run created are removed too;
-ones you already had are kept. Run `--clean` by hand after a crashed run
-(add `--zap` to also delete your profiles and settings).
+To update later, get the latest code and run the script again:
 
-## Releasing
+```sh
+git pull
+scripts/install.sh
+```
 
-`packaging/macos/build-app.sh` builds `dist/wg-gui.app` and the zip for the
-cask, for this Mac only (`--universal` for Apple Silicon and Intel), ad-hoc
-signed unless a signing identity is set. Pushing a `v*` tag runs
-`.github/workflows/release.yml`, which builds a universal app, signs and
-notarizes it, attaches it to the GitHub release and updates
-`Casks/wg-gui.rb` in `nzahasan/homebrew-tap` from
-`packaging/homebrew/wg-gui.rb`.
+## How to uninstall wg-gui
+
+From the `wg-gui` folder, run:
+
+```sh
+scripts/install.sh --uninstall
+```
+
+Add `--zap` to also delete your saved profiles.
+
+## Questions
+
+### What is wg-gui?
+
+wg-gui is a free WireGuard client for macOS with a simple window and a menu bar icon. You use it to connect your Mac to a WireGuard VPN server.
+
+### Is wg-gui free?
+
+Yes. wg-gui is free and open source under the MIT license.
+
+### Does wg-gui work with any WireGuard server?
+
+Yes. It works with any standard WireGuard `.conf` file that has one `[Peer]` section. This includes files from VPN providers and from your own WireGuard server.
+
+### Does it work on Apple Silicon Macs?
+
+Yes. It works on Apple Silicon (M1, M2, M3, M4) and Intel Macs with macOS 13 Ventura or newer.
+
+### Where are my WireGuard profiles saved?
+
+In `~/.config/wg-gui` in your home folder. Only your user account can read them.
+
+### Can I use it from the terminal?
+
+Yes. Run `sudo wg-cli profile.conf` to connect. Press Ctrl+C to disconnect.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+wg-gui is free software under the MIT license. See [LICENSE](LICENSE).
