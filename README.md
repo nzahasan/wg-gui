@@ -21,6 +21,20 @@ your profiles in `~/.config/wg-gui`). If you installed by hand instead,
 choose **Uninstall Helper…** in the menu-bar menu before deleting the
 app; it stops the helper and removes it from Login Items.
 
+### From source
+
+```sh
+scripts/install.sh                     # build and install (again to upgrade)
+scripts/install.sh --uninstall [--zap] # remove it; --zap also deletes profiles
+```
+
+It installs what the build needs if it is missing (the Xcode Command Line
+Tools, Homebrew, and Rust from Homebrew), builds the app, puts it in
+`/Applications` with `wg-cli` on your PATH, and runs the helper as a
+launchd daemon. Unless you sign the build (`SIGN_IDENTITY` and `WG_TEAM_ID`,
+see `packaging/macos/build-app.sh`), the helper runs with `--dev` and
+accepts any local client.
+
 ## How it is put together
 
 - `wg-gui`: the app, running as the user. Imported profiles are copied to

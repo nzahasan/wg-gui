@@ -28,6 +28,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .spacing(14)
         .align_x(Alignment::Center);
         body = body.push(container(zone).padding(24).center_x(Length::Fill).height(300).align_y(Alignment::Center).style(theme::dashed_zone(border, fill)));
+        body = body.push(container(pill("CREATE PROFILE", Message::GoCreate, theme::pill_secondary)).center_x(Length::Fill));
         body = body.push(theme::label(
             "Supported: WireGuard configuration files (.conf) with one [Peer].",
             12.5,

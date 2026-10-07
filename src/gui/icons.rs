@@ -59,3 +59,11 @@ pub fn document(size: f32, color: Color) -> Svg<'static> {
     let body = format!(r#"{DOCUMENT}<line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/>"#);
     show(icon("2", &body), size, color)
 }
+
+pub fn copy(size: f32, color: Color) -> Svg<'static> {
+    show(
+        icon("1.8", r#"<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>"#),
+        size,
+        color,
+    )
+}

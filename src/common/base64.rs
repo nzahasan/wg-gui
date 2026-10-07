@@ -1,4 +1,4 @@
-//! Minimal base64 decoder. WireGuard keys are 32 bytes encoded as 44
+//! Minimal base64 encoder and decoder. WireGuard keys are 32 bytes encoded as 44
 //! base64 characters (43 data characters plus one `=` pad).
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -46,6 +46,27 @@ pub fn decode_key(text: &str) -> Result<[u8; 32], String> {
         .map_err(|_| "key must decode to exactly 32 bytes".to_string())
 }
 
+/// Encodes bytes as standard base64, with `=` padding.
+pub fn encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let bits = chunk.iter().enumerate().fold(0u32, |bits, (i, &b)| bits | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(bits >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Encodes a key as the 44 characters configs use.
+pub fn encode_key(key: &[u8; 32]) -> String {
+    encode(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +86,16 @@ mod tests {
         let key = decode_key("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap();
         let expected: Vec<u8> = (0..32).collect();
         assert_eq!(key.to_vec(), expected);
+    }
+
+    #[test]
+    fn encodes_known_strings() {
+        for (raw, text) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(encode(raw.as_bytes()), text);
+        }
+        let key: [u8; 32] = core::array::from_fn(|i| i as u8);
+        assert_eq!(encode_key(&key), "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+        assert_eq!(decode_key(&encode_key(&key)).unwrap(), key);
     }
 
     #[test]

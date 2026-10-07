@@ -162,8 +162,16 @@ pub fn random_bytes() -> [u8; 32] {
     bytes
 }
 
-#[cfg(test)]
-fn public_key_of(secret: &[u8; 32]) -> [u8; 32] {
+/// A new private key, clamped the way `wg genkey` writes it.
+pub fn generate_private_key() -> [u8; 32] {
+    let mut key = random_bytes();
+    key[0] &= 248;
+    key[31] = (key[31] & 127) | 64;
+    key
+}
+
+/// The public key that goes with a private key.
+pub fn public_key(secret: &[u8; 32]) -> [u8; 32] {
     PublicKey::from(&StaticSecret::from(*secret)).to_bytes()
 }
 
@@ -409,7 +417,7 @@ mod tests {
         let initiator_secret = random_bytes();
         let responder_secret = random_bytes();
         let psk = random_bytes();
-        let responder_public = public_key_of(&responder_secret);
+        let responder_public = public_key(&responder_secret);
 
         let (msg1, state) = build_initiation(initiator_secret, responder_public, psk, 7, None);
         assert_eq!(msg1.len(), INITIATION_LEN);
@@ -439,7 +447,7 @@ mod tests {
         let initiator_secret = random_bytes();
         let responder_secret = random_bytes();
         let psk = [0u8; 32];
-        let (msg1, state) = build_initiation(initiator_secret, public_key_of(&responder_secret), psk, 1, None);
+        let (msg1, state) = build_initiation(initiator_secret, public_key(&responder_secret), psk, 1, None);
         let (mut msg2, _, _) = respond(responder_secret, psk, &msg1, 2);
         msg2[20] ^= 1; // flip a bit in the ephemeral key
         assert!(consume_response(&state, &msg2).is_err());
@@ -448,7 +456,7 @@ mod tests {
     #[test]
     fn cookie_reply_round_trip_and_mac2() {
         let responder_secret = random_bytes();
-        let responder_public = public_key_of(&responder_secret);
+        let responder_public = public_key(&responder_secret);
         let (msg1, _) = build_initiation(random_bytes(), responder_public, [0u8; 32], 1, None);
         assert_eq!(&msg1[132..], &[0u8; 16]); // no cookie yet: mac2 is zeros
         let mac1 = initiation_mac1(&msg1);

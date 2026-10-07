@@ -11,6 +11,7 @@ use iced::widget::{container, float, stack};
 use iced::{Color, Element, Event, Length, Subscription, Task, Vector, event, window};
 
 use wg_common::config::{self, Cidr};
+use wg_common::{base64, noise};
 use wg_common::ipc::{HelperClient, Started};
 use wg_common::netconfig::Route;
 use wg_common::tunnel::{LinkState, Stats};
@@ -34,6 +35,8 @@ const SLIDE_DISTANCE: f32 = 28.0;
 pub enum Screen {
     Profiles,
     Import,
+    /// A profile typed in by hand.
+    Create,
     Connection,
     /// The read-only config of a profile.
     Config(String),
@@ -44,6 +47,7 @@ impl Screen {
     fn depth(&self) -> u8 {
         match self {
             Screen::Profiles => 0,
+            Screen::Create => 2,
             _ => 1,
         }
     }
@@ -106,6 +110,96 @@ pub struct Pending {
     pub summary: config::Summary,
 }
 
+/// A profile being typed in on the Create screen; each field as entered.
+#[derive(Debug, Clone, Default)]
+pub struct Draft {
+    pub name: String,
+    pub private_key: String,
+    pub address: String,
+    pub dns: String,
+    pub mtu: String,
+    pub peer_public_key: String,
+    pub endpoint: String,
+    pub allowed_ips: String,
+    pub preshared_key: String,
+    pub keepalive: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DraftField {
+    Name,
+    PrivateKey,
+    Address,
+    Dns,
+    Mtu,
+    PeerPublicKey,
+    Endpoint,
+    AllowedIps,
+    PresharedKey,
+    Keepalive,
+}
+
+impl Draft {
+    /// An empty form with a fresh private key and a full tunnel.
+    fn new() -> Draft {
+        Draft {
+            private_key: base64::encode_key(&noise::generate_private_key()),
+            allowed_ips: "0.0.0.0/0, ::/0".to_string(),
+            ..Draft::default()
+        }
+    }
+
+    fn field(&mut self, field: DraftField) -> &mut String {
+        match field {
+            DraftField::Name => &mut self.name,
+            DraftField::PrivateKey => &mut self.private_key,
+            DraftField::Address => &mut self.address,
+            DraftField::Dns => &mut self.dns,
+            DraftField::Mtu => &mut self.mtu,
+            DraftField::PeerPublicKey => &mut self.peer_public_key,
+            DraftField::Endpoint => &mut self.endpoint,
+            DraftField::AllowedIps => &mut self.allowed_ips,
+            DraftField::PresharedKey => &mut self.preshared_key,
+            DraftField::Keepalive => &mut self.keepalive,
+        }
+    }
+
+    /// The public key of the private key, if that is a valid key.
+    pub fn public_key(&self) -> Option<String> {
+        let private = base64::decode_key(self.private_key.trim()).ok()?;
+        Some(base64::encode_key(&noise::public_key(&private)))
+    }
+
+    /// The form as a wg-quick config; empty fields are left out.
+    fn to_conf(&self) -> String {
+        let section = |title: &str, lines: &[(&str, &String)]| {
+            let mut text = format!("[{title}]\n");
+            for (key, value) in lines {
+                let value = value.trim();
+                if !value.is_empty() {
+                    text.push_str(&format!("{key} = {value}\n"));
+                }
+            }
+            text
+        };
+        let interface = section(
+            "Interface",
+            &[("PrivateKey", &self.private_key), ("Address", &self.address), ("DNS", &self.dns), ("MTU", &self.mtu)],
+        );
+        let peer = section(
+            "Peer",
+            &[
+                ("PublicKey", &self.peer_public_key),
+                ("PresharedKey", &self.preshared_key),
+                ("Endpoint", &self.endpoint),
+                ("AllowedIPs", &self.allowed_ips),
+                ("PersistentKeepalive", &self.keepalive),
+            ],
+        );
+        format!("{interface}\n{peer}")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
@@ -113,6 +207,14 @@ pub enum Message {
     Frame(Instant),
     GoProfiles,
     GoImport,
+    /// Open the Create screen with a fresh form.
+    GoCreate,
+    DraftChanged(DraftField, String),
+    /// Replace the draft's private key with a new one.
+    GenerateKey,
+    CopyPrivateKey,
+    CopyPublicKey,
+    SaveDraft,
     ViewConfig(String),
     Delete(String),
     /// A profile row was clicked: connect, or show the running connection.
@@ -166,6 +268,7 @@ pub struct App {
     pub pending: Option<Pending>,
     pub import_error: Option<String>,
     pub connect_after: bool,
+    pub draft: Draft,
     pub drag_over: bool,
     dropped: Vec<PathBuf>,
     /// The profile shown on the Config screen, keys masked.
@@ -205,6 +308,7 @@ impl App {
             pending: None,
             import_error: None,
             connect_after: true,
+            draft: Draft::default(),
             drag_over: false,
             dropped: Vec::new(),
             config_text: String::new(),
@@ -255,6 +359,27 @@ impl App {
                 self.pending = None;
                 self.import_error = None;
             }
+            Message::GoCreate => {
+                self.go(Screen::Create);
+                self.draft = Draft::new();
+                self.import_error = None;
+            }
+            Message::DraftChanged(field, value) => *self.draft.field(field) = value,
+            Message::GenerateKey => self.draft.private_key = base64::encode_key(&noise::generate_private_key()),
+            Message::CopyPrivateKey => {
+                let key = self.draft.private_key.trim().to_string();
+                if !key.is_empty() {
+                    self.show_toast("Private key copied".to_string());
+                    return iced::clipboard::write(key);
+                }
+            }
+            Message::CopyPublicKey => {
+                if let Some(key) = self.draft.public_key() {
+                    self.show_toast("Public key copied".to_string());
+                    return iced::clipboard::write(key);
+                }
+            }
+            Message::SaveDraft => return self.save_draft(),
             Message::ViewConfig(name) => {
                 let Some(profile) = self.profile(&name).filter(|p| !p.stale) else {
                     return Task::none();
@@ -429,6 +554,7 @@ impl App {
         let screen = match &self.screen {
             Screen::Profiles => screens::profiles::view(self),
             Screen::Import => screens::import::view(self),
+            Screen::Create => screens::create::view(self),
             Screen::Connection => screens::connection::view(self),
             Screen::Config(name) => screens::config::view(self, name),
         };
@@ -776,6 +902,34 @@ impl App {
             return self.connect(name);
         }
         self.show_toast(format!("Profile “{name}” added"));
+        Task::none()
+    }
+
+    fn save_draft(&mut self) -> Task<Message> {
+        let name = self.draft.name.trim().to_string();
+        let text = self.draft.to_conf();
+        let saved = if name.is_empty() {
+            Err("Enter a profile name.".to_string())
+        } else {
+            config::summary(&text)
+                .and_then(|_| self.store.as_ref().ok_or("no profile directory".to_string()))
+                .and_then(|store| store.import(&name, &text, None))
+        };
+        let name = match saved {
+            Ok(name) => name,
+            Err(e) => {
+                self.import_error = Some(e);
+                return Task::none();
+            }
+        };
+        self.import_error = None;
+        self.reload();
+        self.highlight = Some(name.clone());
+        self.go(Screen::Profiles);
+        if self.connect_after {
+            return self.connect(name);
+        }
+        self.show_toast(format!("Profile “{name}” created"));
         Task::none()
     }
 
