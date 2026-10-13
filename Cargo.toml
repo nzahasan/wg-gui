@@ -1,6 +1,6 @@
 [package]
 name = "wg-client"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 
@@ -32,6 +32,8 @@ gui = ["dep:iced", "dep:rfd", "dep:tray-icon", "dep:resvg", "dep:block2", "dep:o
 [dependencies]
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 chacha20poly1305 = "0.11"
+# Transport packets: ARMv8 NEON / x86 AVX2 assembly for ChaCha20-Poly1305.
+ring = "0.17.14"
 blake2 = "0.11"
 iced = { version = "0.14", optional = true, features = ["canvas", "svg", "tokio"] }
 rfd = { version = "0.17", optional = true }
