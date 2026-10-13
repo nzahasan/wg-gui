@@ -16,6 +16,10 @@ const SYSPROTO_CONTROL: c_int = 2;
 const AF_SYS_CONTROL: u16 = 2;
 const CTLIOCGINFO: u64 = 0xc064_4e03;
 const UTUN_OPT_IFNAME: c_int = 2;
+const UTUN_OPT_MAX_PENDING_PACKETS: c_int = 16;
+/// Packets the kernel may queue for us; its default is 1, which stalls
+/// output until each one is read.
+const MAX_PENDING_PACKETS: c_int = 64;
 const UTUN_CONTROL_NAME: &[u8] = b"com.apple.net.utun_control";
 const MAX_KCTL_NAME: usize = 96;
 const SOL_SOCKET: c_int = 0xffff;
@@ -24,8 +28,9 @@ const SO_RCVTIMEO: c_int = 0x1006;
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 30;
 
-/// Enough for any IP packet that can traverse the tunnel.
-const MAX_PACKET: usize = 65536;
+/// Enough for any IP packet that can traverse the tunnel; the size of
+/// the buffer `read_packet` wants.
+pub const MAX_PACKET: usize = 65536;
 
 #[repr(C)]
 struct CtlInfo {
@@ -113,6 +118,12 @@ impl Tun {
             .trim_end_matches('\0')
             .to_string();
 
+        // Best effort; reads work either way.
+        let pending = MAX_PENDING_PACKETS;
+        unsafe {
+            setsockopt(fd, SYSPROTO_CONTROL, UTUN_OPT_MAX_PENDING_PACKETS, (&pending as *const c_int).cast(), 4)
+        };
+
         Ok(Tun { fd, name })
     }
 
@@ -128,10 +139,9 @@ impl Tun {
     }
 
     /// Blocks until the network stack hands us an IP packet (or the read
-    /// timeout passes). Returns the packet without the 4-byte address
-    /// family header.
-    pub fn read_packet(&self) -> io::Result<Vec<u8>> {
-        let mut buf = vec![0u8; MAX_PACKET];
+    /// timeout passes), reading it into `buf`. Returns the packet without
+    /// the 4-byte address family header.
+    pub fn read_packet<'a>(&self, buf: &'a mut [u8]) -> io::Result<&'a [u8]> {
         let n = unsafe { read(self.fd, buf.as_mut_ptr().cast(), buf.len()) };
         if n < 0 {
             return Err(io::Error::last_os_error());
@@ -140,9 +150,7 @@ impl Tun {
         if n < 4 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "short utun packet"));
         }
-        buf.truncate(n);
-        buf.drain(..4);
-        Ok(buf)
+        Ok(&buf[4..n])
     }
 
     /// Delivers an IP packet to the network stack.

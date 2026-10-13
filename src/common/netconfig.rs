@@ -3,7 +3,9 @@
 //! standard macOS tools (`ifconfig`, `route`, `networksetup`) exactly the
 //! way `wg-quick` does.
 
+use std::fs;
 use std::net::IpAddr;
+use std::path::Path;
 use std::process::Command;
 
 use crate::config::{Cidr, Config};
@@ -13,12 +15,20 @@ use crate::config::{Cidr, Config};
 const WIREGUARD_OVERHEAD: u16 = 80;
 /// Assumed link MTU when the real one cannot be found (Ethernet, Wi-Fi).
 const FALLBACK_LINK_MTU: u16 = 1500;
+/// What `cleanup` would undo, kept on disk while a tunnel is up so a
+/// crashed or killed process can be cleaned up after (`recover`).
+/// DNS set with networksetup and the endpoint route outlive the process.
+const STATE_FILE: &str = "/var/db/wg-gui/state";
 
 /// What has to be undone when the tunnel goes down, plus a record of what
 /// was set up so a front-end can show it.
 #[derive(Debug, Default)]
 pub struct Undo {
+    /// The utun the routes go to; to tell whether the endpoint is caught.
+    tun_name: String,
     endpoint_route: Option<IpAddr>,
+    /// IPv6 reject routes; unlike routes on the utun they outlive it.
+    rejects: Vec<String>,
     /// (network service name, DNS servers it had before we changed them).
     dns_backup: Vec<(String, Vec<String>)>,
     /// The MTU given to the tunnel interface.
@@ -46,7 +56,8 @@ pub struct Route {
 /// Configures the system for the tunnel. On failure, whatever was already
 /// changed is undone before the error is returned.
 pub fn configure(tun_name: &str, config: &Config) -> Result<Undo, String> {
-    let mut undo = Undo::default();
+    recover();
+    let mut undo = Undo { tun_name: tun_name.to_string(), ..Undo::default() };
     match apply(tun_name, config, &mut undo) {
         Ok(()) => Ok(undo),
         Err(e) => {
@@ -70,23 +81,16 @@ fn apply(tun_name: &str, config: &Config, undo: &mut Undo) -> Result<(), String>
     };
     run(&["ifconfig", tun_name, "mtu", &undo.mtu.to_string(), "up"])?;
 
+    // How the endpoint is reached without the tunnel, looked up before
+    // our routes exist.
+    let path_before = route_to(endpoint_ip);
+
     for allowed in &config.peer.allowed_ips {
         if allowed.prefix == 0 {
             // Full tunnel. Two half-width routes beat the existing default
-            // route without replacing it, and the endpoint itself must keep
-            // going out the real gateway or encrypted packets would loop.
+            // route without replacing it.
             for half in add_default_routes(tun_name, allowed.ip.is_ipv4())? {
                 undo.routes.push(Route { destination: half.to_string(), gateway: "on-link".to_string(), interface: tun_name.to_string() });
-            }
-            if endpoint_ip.is_ipv4() == allowed.ip.is_ipv4() {
-                let gateway = add_endpoint_route(endpoint_ip)?;
-                undo.endpoint_route = Some(endpoint_ip);
-                let host_prefix = if endpoint_ip.is_ipv4() { 32 } else { 128 };
-                undo.routes.push(Route {
-                    destination: format!("{endpoint_ip}/{host_prefix}"),
-                    gateway,
-                    interface: physical.clone().unwrap_or_else(|| "?".to_string()),
-                });
             }
         } else {
             add_route(tun_name, allowed)?;
@@ -98,32 +102,53 @@ fn apply(tun_name: &str, config: &Config, undo: &mut Undo) -> Result<(), String>
         }
     }
 
+    // A full IPv4 tunnel with no IPv6 in it would let IPv6 traffic go
+    // out the physical interface unencrypted. Reject it instead: unlike a
+    // blackhole, apps get an immediate error and fall back to IPv4.
+    let full_ipv4 = config.peer.allowed_ips.iter().any(|a| a.prefix == 0 && a.ip.is_ipv4());
+    let any_ipv6 = config.peer.allowed_ips.iter().any(|a| a.ip.is_ipv6());
+    if full_ipv4 && !any_ipv6 {
+        for half in ["::/1", "8000::/1"] {
+            // A route left by a tunnel that crashed would make the add fail.
+            let _ = capture(&["route", "-q", "-n", "delete", "-inet6", half]);
+            run(&["route", "-q", "-n", "add", "-inet6", half, "::1", "-reject"])?;
+            undo.rejects.push(half.to_string());
+            undo.routes.push(Route { destination: half.to_string(), gateway: "reject".to_string(), interface: "lo0".to_string() });
+        }
+    }
+
+    // If our routes now catch the endpoint, encrypted packets would loop
+    // into the tunnel (or be rejected): keep them on the path they had.
+    // Nothing is sent before the tunnel threads start, after this.
+    if is_caught(endpoint_ip, tun_name) {
+        let path = path_before.ok_or_else(|| format!("no route to the endpoint {endpoint_ip}"))?;
+        pin_endpoint(undo, endpoint_ip, &path)?;
+    }
+
+    // On disk before DNS changes; set_dns adds each service as it goes.
+    save_state(undo);
     if !config.dns.is_empty() {
-        set_dns(&config.dns, &mut undo.dns_backup)?;
+        set_dns(&config.dns, undo)?;
     }
     Ok(())
 }
 
-/// After a network change: points the endpoint's host route at the
-/// current default gateway, moving it to `endpoint` if the endpoint's
-/// address changed, and updates `undo` to match. A split tunnel pins no
-/// route, so there is nothing to do.
+/// After a network change: moves the endpoint's host route to the
+/// current default gateway (and to `endpoint`, if its address changed),
+/// or drops it if the tunnel no longer catches the endpoint, and updates
+/// `undo` to match.
 pub fn repin_endpoint(undo: &mut Undo, endpoint: IpAddr) -> Result<(), String> {
-    let Some(old) = undo.endpoint_route else {
-        return Ok(());
-    };
-    let gateway = default_gateway(endpoint.is_ipv4())?;
-    // The old route may already be gone, along with its interface.
-    let _ = capture(&["route", "-q", "-n", "delete", family_flag(old), &old.to_string()]);
-    run(&["route", "-q", "-n", "add", family_flag(endpoint), &endpoint.to_string(), "-gateway", &gateway])?;
-    undo.endpoint_route = Some(endpoint);
-
-    let interface = outgoing_interface(endpoint).unwrap_or_else(|| "?".to_string());
-    let host_prefix = if endpoint.is_ipv4() { 32 } else { 128 };
-    let old_destination = format!("{old}/{}", if old.is_ipv4() { 32 } else { 128 });
-    if let Some(route) = undo.routes.iter_mut().find(|r| r.destination == old_destination) {
-        *route = Route { destination: format!("{endpoint}/{host_prefix}"), gateway, interface };
+    if let Some(old) = undo.endpoint_route.take() {
+        // The old route may already be gone, along with its interface.
+        let _ = capture(&["route", "-q", "-n", "delete", family_flag(old), &old.to_string()]);
+        let old_destination = host_route(old);
+        undo.routes.retain(|r| r.destination != old_destination);
     }
+    if is_caught(endpoint, &undo.tun_name) {
+        let gateway = default_gateway(endpoint.is_ipv4())?;
+        pin_endpoint(undo, endpoint, &RouteTo { gateway: Some(gateway), interface: None })?;
+    }
+    save_state(undo);
     Ok(())
 }
 
@@ -140,8 +165,112 @@ pub fn cleanup(undo: &Undo) {
             eprintln!("warning: {e}");
         }
     }
+    for half in &undo.rejects {
+        if let Err(e) = run(&["route", "-q", "-n", "delete", "-inet6", half]) {
+            eprintln!("warning: {e}");
+        }
+    }
     // The utun interface and every route through it vanish when the
     // device is closed (TunnelHandle::stop, or process exit).
+    let _ = fs::remove_file(STATE_FILE);
+}
+
+/// Undoes what a tunnel that did not shut down cleanly (crash, SIGKILL,
+/// power loss) left behind: DNS servers and routes that outlive it. Call
+/// before bringing a tunnel up; does nothing if the last one stopped
+/// cleanly.
+pub fn recover() {
+    let Ok(text) = fs::read_to_string(STATE_FILE) else {
+        return;
+    };
+    if owner(&text).is_some_and(|pid| pid != std::process::id() && process_alive(pid)) && same_boot(&text) {
+        return; // Another process's tunnel is up; those settings are live.
+    }
+    println!("restoring network settings left by a tunnel that did not stop cleanly");
+    cleanup(&parse_state(&text));
+}
+
+/// Records what `cleanup` would undo. Best effort: a failure only costs
+/// crash recovery.
+fn save_state(undo: &Undo) {
+    let path = Path::new(STATE_FILE);
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if let Err(e) = fs::write(path, format_state(undo)) {
+        eprintln!("warning: cannot write {STATE_FILE}: {e}");
+    }
+}
+
+/// One line per item, tab-separated (service names may contain spaces).
+fn format_state(undo: &Undo) -> String {
+    let mut text = format!("pid\t{}\nboot\t{}\n", std::process::id(), boot_time().unwrap_or(0));
+    for (service, servers) in &undo.dns_backup {
+        text += &format!("dns\t{service}\t{}\n", servers.join(" "));
+    }
+    if let Some(ip) = undo.endpoint_route {
+        text += &format!("route\t{ip}\n");
+    }
+    for half in &undo.rejects {
+        text += &format!("reject\t{half}\n");
+    }
+    text
+}
+
+fn parse_state(text: &str) -> Undo {
+    let mut undo = Undo::default();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        match fields[..] {
+            ["dns", service, servers] => {
+                undo.dns_backup.push((service.to_string(), servers.split_whitespace().map(String::from).collect()));
+            }
+            ["route", ip] => undo.endpoint_route = ip.parse().ok(),
+            ["reject", half] => undo.rejects.push(half.to_string()),
+            ["pid" | "boot", _] => {}
+            _ => eprintln!("warning: ignoring '{line}' in {STATE_FILE}"),
+        }
+    }
+    undo
+}
+
+/// The process that wrote the state file.
+fn owner(text: &str) -> Option<u32> {
+    text.lines().find_map(|line| line.strip_prefix("pid\t")?.parse().ok())
+}
+
+/// True if the state file was written since the last boot. Its process
+/// id means nothing after a reboot: another process may have it now.
+fn same_boot(text: &str) -> bool {
+    let written = text.lines().find_map(|line| line.strip_prefix("boot\t")?.parse::<i64>().ok());
+    written.is_some() && written == boot_time()
+}
+
+/// When the system booted, in seconds since the epoch (kern.boottime).
+fn boot_time() -> Option<i64> {
+    let mut timeval = [0i64; 2]; // struct timeval: tv_sec, tv_usec + padding
+    let mut len = std::mem::size_of_val(&timeval);
+    let rc = unsafe {
+        sysctlbyname(c"kern.boottime".as_ptr(), timeval.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+    };
+    (rc == 0).then_some(timeval[0])
+}
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        old: *mut std::ffi::c_void,
+        old_len: *mut usize,
+        new: *mut std::ffi::c_void,
+        new_len: usize,
+    ) -> i32;
+}
+
+/// Signal 0 checks for existence; EPERM still means the process exists.
+fn process_alive(pid: u32) -> bool {
+    let rc = unsafe { kill(pid as i32, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(1)
 }
 
 fn add_address(tun_name: &str, address: &Cidr) -> Result<(), String> {
@@ -171,12 +300,58 @@ fn add_default_routes(tun_name: &str, ipv4: bool) -> Result<[&'static str; 2], S
     Ok(halves)
 }
 
-/// Pins the endpoint to the current default gateway, which is returned.
-fn add_endpoint_route(endpoint_ip: IpAddr) -> Result<String, String> {
-    let gateway = default_gateway(endpoint_ip.is_ipv4())?;
-    let family = family_flag(endpoint_ip);
-    run(&["route", "-q", "-n", "add", family, &endpoint_ip.to_string(), "-gateway", &gateway])?;
-    Ok(gateway)
+/// Where `route -n get` says packets to an address go.
+#[derive(Debug)]
+struct RouteTo {
+    /// None for an on-link destination.
+    gateway: Option<String>,
+    interface: Option<String>,
+}
+
+fn route_to(destination: IpAddr) -> Option<RouteTo> {
+    let output = capture(&["route", "-n", "get", family_flag(destination), &destination.to_string()]).ok()?;
+    let field = |name: &str| {
+        output.lines().find_map(|line| Some(line.trim().strip_prefix(name)?.trim().to_string()))
+    };
+    // Directly connected networks show their link as the "gateway".
+    let gateway = field("gateway:").filter(|g| !g.starts_with("link#"));
+    Some(RouteTo { gateway, interface: field("interface:") })
+}
+
+/// True if packets to `ip` would go into the tunnel or be rejected.
+fn is_caught(ip: IpAddr, tun_name: &str) -> bool {
+    let Ok(output) = capture(&["route", "-n", "get", family_flag(ip), &ip.to_string()]) else {
+        return false; // No route at all; nothing to protect.
+    };
+    output.lines().any(|line| {
+        let line = line.trim();
+        line.strip_prefix("interface:").is_some_and(|name| name.trim() == tun_name)
+            || (line.starts_with("flags:") && line.contains("REJECT"))
+    })
+}
+
+/// Adds a host route sending the endpoint along `path`, and records it.
+fn pin_endpoint(undo: &mut Undo, endpoint: IpAddr, path: &RouteTo) -> Result<(), String> {
+    let family = family_flag(endpoint);
+    let target = endpoint.to_string();
+    // A route left by a tunnel that crashed would make the add fail.
+    let _ = capture(&["route", "-q", "-n", "delete", family, &target]);
+    match (&path.gateway, &path.interface) {
+        (Some(gateway), _) => run(&["route", "-q", "-n", "add", family, &target, "-gateway", gateway])?,
+        (None, Some(interface)) => run(&["route", "-q", "-n", "add", family, &target, "-interface", interface])?,
+        (None, None) => return Err(format!("no route to the endpoint {endpoint}")),
+    }
+    undo.endpoint_route = Some(endpoint);
+    undo.routes.push(Route {
+        destination: host_route(endpoint),
+        gateway: path.gateway.clone().unwrap_or_else(|| "on-link".to_string()),
+        interface: path.interface.clone().or_else(|| outgoing_interface(endpoint)).unwrap_or_else(|| "?".to_string()),
+    });
+    Ok(())
+}
+
+fn host_route(ip: IpAddr) -> String {
+    format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 })
 }
 
 /// Reads the current default gateway from `route -n get default`. Our
@@ -232,17 +407,19 @@ fn family_flag(ip: IpAddr) -> &'static str {
 // DNS via networksetup
 // ---------------------------------------------------------------------------
 
-/// Points every network service at `servers`, recording each service's
-/// previous servers in `backup` as soon as it is changed.
-fn set_dns(servers: &[IpAddr], backup: &mut Vec<(String, Vec<String>)>) -> Result<(), String> {
+/// Points every network service at `servers`. Each service's previous
+/// servers are recorded, on disk too, before it is changed, so a crash
+/// part-way can still put them back.
+fn set_dns(servers: &[IpAddr], undo: &mut Undo) -> Result<(), String> {
     let server_strings: Vec<String> = servers.iter().map(|ip| ip.to_string()).collect();
 
     for service in network_services()? {
         let previous = current_dns(&service)?;
+        undo.dns_backup.push((service.clone(), previous));
+        save_state(undo);
         let mut args = vec!["networksetup", "-setdnsservers", service.as_str()];
         args.extend(server_strings.iter().map(String::as_str));
         run(&args)?;
-        backup.push((service, previous));
     }
     Ok(())
 }
@@ -299,4 +476,53 @@ fn capture(args: &[&str]) -> Result<String, String> {
         return Err(format!("'{}' failed: {}", args.join(" "), stderr.trim()));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_round_trips() {
+        let undo = Undo {
+            endpoint_route: Some("203.0.113.7".parse().unwrap()),
+            rejects: vec!["::/1".to_string(), "8000::/1".to_string()],
+            dns_backup: vec![
+                ("Wi-Fi".to_string(), vec!["192.168.1.1".to_string(), "8.8.8.8".to_string()]),
+                ("USB 10/100 LAN".to_string(), vec![]),
+            ],
+            ..Undo::default()
+        };
+        let text = format_state(&undo);
+        assert_eq!(owner(&text), Some(std::process::id()));
+        assert!(same_boot(&text));
+        assert!(!same_boot(&text.replace(&format!("boot\t{}", boot_time().unwrap()), "boot\t12345")));
+        let back = parse_state(&text);
+        assert_eq!(back.endpoint_route, undo.endpoint_route);
+        assert_eq!(back.rejects, undo.rejects);
+        assert_eq!(back.dns_backup, undo.dns_backup);
+    }
+
+    #[test]
+    fn reads_the_real_routing_table() {
+        // Needs a network, but not root.
+        let Some(path) = route_to("1.1.1.1".parse().unwrap()) else {
+            return; // Offline.
+        };
+        assert!(path.interface.is_some(), "{path:?}");
+        assert!(!path.gateway.as_deref().is_some_and(|g| g.starts_with("link#")));
+        assert!(!is_caught("1.1.1.1".parse().unwrap(), "utun999"));
+    }
+
+    #[test]
+    fn boot_time_is_plausible() {
+        let boot = boot_time().unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert!(boot > 1_600_000_000 && boot < now, "{boot}");
+    }
+
+    #[test]
+    fn this_process_is_alive() {
+        assert!(process_alive(std::process::id()));
+    }
 }

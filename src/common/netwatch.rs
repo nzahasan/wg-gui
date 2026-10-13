@@ -18,6 +18,11 @@ use std::time::{Duration, Instant};
 
 /// How long the routing table must stay quiet before the callback runs.
 const SETTLE: Duration = Duration::from_secs(1);
+/// The callback runs this long after the first change of a burst even if
+/// the table never goes quiet (some interfaces chatter constantly).
+const MAX_SETTLE: Duration = Duration::from_secs(3);
+/// The routing socket's buffer overflowed: messages were lost.
+const ENOBUFS: i32 = 55;
 /// Longest a read waits before the thread re-checks the stop flag.
 const POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -64,19 +69,25 @@ impl Watcher {
         let stopping = Arc::clone(&stop);
         let thread = thread::spawn(move || {
             let mut buf = [0u8; 2048];
-            let mut last_change: Option<Instant> = None;
+            // First and latest relevant change of the current burst.
+            let mut burst: Option<(Instant, Instant)> = None;
             while !stopping.load(Ordering::SeqCst) {
-                match routes.read(&mut buf) {
-                    Ok(n) if is_relevant(&buf[..n]) => last_change = Some(Instant::now()),
-                    Ok(_) => {}
-                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
+                let changed = match routes.read(&mut buf) {
+                    Ok(n) => is_relevant(&buf[..n]),
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => false,
+                    // Lost messages may have been relevant ones.
+                    Err(e) if e.raw_os_error() == Some(ENOBUFS) => true,
                     Err(e) => {
                         eprintln!("warning: network watcher stopped: {e}");
                         return;
                     }
+                };
+                if changed {
+                    let now = Instant::now();
+                    burst = Some((burst.map_or(now, |(first, _)| first), now));
                 }
-                if last_change.is_some_and(|t| t.elapsed() >= SETTLE) {
-                    last_change = None;
+                if burst.is_some_and(|(first, last)| last.elapsed() >= SETTLE || first.elapsed() >= MAX_SETTLE) {
+                    burst = None;
                     on_change();
                 }
             }

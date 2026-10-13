@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -26,7 +27,7 @@ use crate::ip;
 use crate::noise::{self, Cookie, HandshakeState, MESSAGE_COOKIE_REPLY, MESSAGE_RESPONSE};
 use crate::session::{receiver_index, Session, KEEPALIVE_TIMEOUT, MESSAGE_TRANSPORT, REJECT_AFTER_TIME, REKEY_TIMEOUT};
 use crate::timers::{Expired, Timers, MAX_TIMER_HANDSHAKES};
-use crate::tun::Tun;
+use crate::tun::{Tun, MAX_PACKET};
 
 /// How often the timer thread checks for expired timers.
 const TICK: Duration = Duration::from_millis(100);
@@ -46,6 +47,39 @@ const SEND_FAILURE_GRACE: Duration = Duration::from_secs(1);
 /// hearing us (the kernel's new-handshake timeout: it would have sent a
 /// keepalive within KEEPALIVE_TIMEOUT).
 const STALE_AFTER: Duration = Duration::from_secs(KEEPALIVE_TIMEOUT.as_secs() + REKEY_TIMEOUT.as_secs());
+/// The machine slept at least this long between two timer ticks.
+const WAKE_THRESHOLD: Duration = Duration::from_secs(2);
+/// UDP socket buffer size, as wireguard-go uses; absorbs bursts.
+const SOCKET_BUFFER: i32 = 7 << 20;
+
+const ENOBUFS: i32 = 55;
+const SOL_SOCKET: i32 = 0xffff;
+const SO_SNDBUF: i32 = 0x1001;
+const SO_RCVBUF: i32 = 0x1002;
+/// Counts time asleep; CLOCK_UPTIME_RAW (what Instant uses) does not.
+const CLOCK_MONOTONIC: u32 = 6;
+const CLOCK_UPTIME_RAW: u32 = 8;
+
+#[repr(C)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+unsafe extern "C" {
+    fn clock_gettime(clock: u32, ts: *mut Timespec) -> i32;
+    fn setsockopt(fd: i32, level: i32, name: i32, value: *const std::ffi::c_void, len: u32) -> i32;
+}
+
+/// Total time the machine has spent asleep since boot.
+fn time_asleep() -> Duration {
+    let read = |clock| {
+        let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { clock_gettime(clock, &mut ts) };
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    };
+    read(CLOCK_MONOTONIC).saturating_sub(read(CLOCK_UPTIME_RAW))
+}
 
 struct State {
     session: Option<Session>,
@@ -68,6 +102,8 @@ struct State {
     unanswered_since: Option<Instant>,
     /// When the first data packet that got nothing back went out.
     unreplied_since: Option<Instant>,
+    /// When an authenticated packet last arrived.
+    heard_at: Option<Instant>,
     /// When sends started failing (no route, no address).
     send_failing_since: Option<Instant>,
     /// The network watcher found no network.
@@ -76,17 +112,21 @@ struct State {
 }
 
 impl State {
-    fn sent(&mut self, result: &std::io::Result<usize>, now: Instant) {
+    /// Records a send's outcome. Returns true if the error is worth
+    /// logging: only the first of a run of failures is.
+    fn sent(&mut self, result: &std::io::Result<usize>, now: Instant) -> bool {
         match result {
             Ok(_) => self.send_failing_since = None,
-            Err(_) => {
-                self.send_failing_since.get_or_insert(now);
-            }
+            // The interface queue is full: a dropped packet, not a dead link.
+            Err(e) if e.raw_os_error() == Some(ENOBUFS) => {}
+            Err(_) => return self.send_failing_since.replace(self.send_failing_since.unwrap_or(now)).is_none(),
         }
+        false
     }
 
     /// An authenticated packet arrived: the peer hears us and we hear it.
     fn heard_from_peer(&mut self) {
+        self.heard_at = Some(Instant::now());
         self.unreplied_since = None;
         self.offline = false;
     }
@@ -166,6 +206,11 @@ impl Link {
         socket
             .set_read_timeout(Some(POLL_TIMEOUT))
             .map_err(|e| format!("cannot set UDP read timeout: {e}"))?;
+        // Best effort: the system may cap it lower.
+        for option in [SO_SNDBUF, SO_RCVBUF] {
+            let size: *const i32 = &SOCKET_BUFFER;
+            unsafe { setsockopt(socket.as_raw_fd(), SOL_SOCKET, option, size.cast(), 4) };
+        }
         Ok(Link { socket, endpoint })
     }
 }
@@ -245,17 +290,7 @@ impl TunnelControl {
     /// address it comes from) and a fresh handshake in case that session
     /// is no longer valid, e.g. after sleep.
     pub fn rebind(&self, endpoint: SocketAddr) -> Result<(), String> {
-        let link = Link::open(endpoint)?;
-        *self.0.link.lock().unwrap() = Arc::new(link);
-        let mut state = self.0.state.lock().unwrap();
-        state.offline = false;
-        state.send_failing_since = None;
-        if state.session.as_ref().is_some_and(|s| s.can_send()) {
-            self.0.send_keepalive(&mut state);
-        }
-        state.last_handshake_sent = None; // skip the rate limit this once
-        self.0.send_handshake(&mut state, false);
-        Ok(())
+        self.0.rebind(endpoint)
     }
 }
 
@@ -284,6 +319,7 @@ pub fn run(tun: Tun, config: &Config) -> Result<TunnelHandle, String> {
             last_handshake: None,
             unanswered_since: None,
             unreplied_since: None,
+            heard_at: None,
             send_failing_since: None,
             offline: false,
             timers: Timers::new(keepalive_interval),
@@ -307,6 +343,21 @@ pub fn run(tun: Tun, config: &Config) -> Result<TunnelHandle, String> {
 impl Tunnel {
     fn link(&self) -> Arc<Link> {
         Arc::clone(&self.link.lock().unwrap())
+    }
+
+    /// See `TunnelControl::rebind`.
+    fn rebind(&self, endpoint: SocketAddr) -> Result<(), String> {
+        let link = Link::open(endpoint)?;
+        *self.link.lock().unwrap() = Arc::new(link);
+        let mut state = self.state.lock().unwrap();
+        state.offline = false;
+        state.send_failing_since = None;
+        if state.session.as_ref().is_some_and(|s| s.can_send()) {
+            self.send_keepalive(&mut state);
+        }
+        state.last_handshake_sent = None; // skip the rate limit this once
+        self.send_handshake(&mut state, false);
+        Ok(())
     }
 
     // -- handshake ---------------------------------------------------------
@@ -348,8 +399,9 @@ impl Tunnel {
         let link = self.link();
         println!("sending handshake initiation to {}", link.endpoint);
         let result = link.socket.send(&msg);
-        state.sent(&result, now);
-        if let Err(e) = result {
+        if state.sent(&result, now)
+            && let Err(e) = result
+        {
             eprintln!("error: cannot send handshake: {e}");
         }
     }
@@ -407,15 +459,6 @@ impl Tunnel {
 
     // -- sending -----------------------------------------------------------
 
-    /// Queues an outgoing IP packet and sends everything queued.
-    fn send_data(&self, state: &mut State, packet: Vec<u8>) {
-        if state.staged.len() == MAX_STAGED_PACKETS {
-            state.staged.pop_front();
-        }
-        state.staged.push_back(packet);
-        self.send_staged(state);
-    }
-
     /// Sends a keepalive. Waiting packets prove we are alive just as well,
     /// so the empty packet is only added when nothing else is queued.
     fn send_keepalive(&self, state: &mut State) {
@@ -428,27 +471,48 @@ impl Tunnel {
     /// Encrypts and sends the queued packets. Without a usable session
     /// they stay queued and a handshake is started.
     fn send_staged(&self, state: &mut State) {
-        let now = Instant::now();
-        let mut sent_any = false;
-        let mut sent_data = false;
-        let link = self.link();
+        let messages = self.encrypt_staged(state);
+        let sent_at = Instant::now();
+        let results = self.transmit(&messages);
+        self.record_sent(state, &messages, results, sent_at);
+    }
 
+    /// Encrypts what is queued and can be sent now. Each message comes
+    /// with whether it carries data (not a keepalive).
+    fn encrypt_staged(&self, state: &mut State) -> Vec<(Vec<u8>, bool)> {
+        let mut messages = Vec::new();
         while let Some(packet) = state.staged.pop_front() {
             let Some(session) = state.session.as_mut().filter(|s| s.can_send()) else {
                 state.staged.push_front(packet);
                 break;
             };
-            let msg = session.encrypt(&packet);
-            let result = link.socket.send(&msg);
-            state.sent(&result, now);
+            messages.push((session.encrypt(&packet), !packet.is_empty()));
+        }
+        messages
+    }
+
+    /// Sends encrypted messages; needs no lock.
+    fn transmit(&self, messages: &[(Vec<u8>, bool)]) -> Vec<std::io::Result<usize>> {
+        let link = self.link();
+        messages.iter().map(|(msg, _)| link.socket.send(msg)).collect()
+    }
+
+    /// Accounts for what `transmit` did, starting at `now`, and handshakes
+    /// if packets are stuck or the keys are getting old.
+    fn record_sent(&self, state: &mut State, messages: &[(Vec<u8>, bool)], results: Vec<std::io::Result<usize>>, now: Instant) {
+        let mut sent_any = false;
+        let mut sent_data = false;
+        for ((msg, is_data), result) in messages.iter().zip(results) {
+            let log = state.sent(&result, now);
             match result {
                 Ok(_) => {
                     self.counters.tx_bytes.fetch_add(msg.len() as u64, Ordering::Relaxed);
                     self.counters.tx_packets.fetch_add(1, Ordering::Relaxed);
                     sent_any = true;
-                    sent_data |= !packet.is_empty();
+                    sent_data |= is_data;
                 }
-                Err(e) => eprintln!("error: cannot send packet: {e}"),
+                Err(e) if log => eprintln!("error: cannot send packet: {e}"),
+                Err(_) => {}
             }
         }
 
@@ -456,12 +520,13 @@ impl Tunnel {
             state.timers.any_packet_traversal(now);
             state.timers.any_packet_sent();
         }
-        if sent_data {
+        // Unless the peer already answered while the lock was free (the
+        // upload path records late): then nothing is unanswered.
+        if sent_data && !state.heard_at.is_some_and(|t| t >= now) {
             state.timers.data_sent(now);
             state.unreplied_since.get_or_insert(now);
         }
 
-        // Handshake if packets are stuck, or if the keys are getting old.
         let stuck = !state.staged.is_empty();
         let wants_rekey = state.session.as_ref().is_some_and(|s| s.wants_rekey_after_send());
         if stuck || wants_rekey {
@@ -530,8 +595,9 @@ impl Tunnel {
     }
 
     fn tun_to_udp_loop(&self) {
+        let mut buf = vec![0u8; MAX_PACKET];
         while !self.stopping() {
-            let packet = match self.tun.read_packet() {
+            let packet = match self.tun.read_packet(&mut buf) {
                 Ok(packet) => packet,
                 Err(e) if is_timeout(&e) => continue,
                 Err(e) => {
@@ -540,8 +606,18 @@ impl Tunnel {
                     continue;
                 }
             };
+            // The bulk upload path: the send syscalls happen outside the
+            // lock, so receiving and timers are not held up by them.
             let mut state = self.state.lock().unwrap();
-            self.send_data(&mut state, packet);
+            if state.staged.len() == MAX_STAGED_PACKETS {
+                state.staged.pop_front();
+            }
+            state.staged.push_back(packet.to_vec());
+            let messages = self.encrypt_staged(&mut state);
+            drop(state);
+            let sent_at = Instant::now();
+            let results = self.transmit(&messages);
+            self.record_sent(&mut self.state.lock().unwrap(), &messages, results, sent_at);
         }
     }
 
@@ -551,6 +627,9 @@ impl Tunnel {
             let n = match self.link().socket.recv(&mut buf) {
                 Ok(n) => n,
                 Err(e) if is_timeout(&e) => continue,
+                // A stale ICMP port-unreachable reported on the connected
+                // socket; the next packet may well get through.
+                Err(e) if e.kind() == ErrorKind::ConnectionRefused => continue,
                 Err(e) => {
                     eprintln!("error: cannot receive: {e}");
                     thread::sleep(ERROR_BACKOFF);
@@ -568,8 +647,20 @@ impl Tunnel {
     }
 
     fn timer_loop(&self) {
+        let mut asleep = time_asleep();
         while !self.stopping() {
             thread::sleep(TICK);
+            // After sleep the peer has likely dropped our session, and
+            // our timers (on Instant) did not see the time pass: get a
+            // fresh socket and handshake now rather than ~15 s later.
+            let now_asleep = time_asleep();
+            if now_asleep.saturating_sub(asleep) >= WAKE_THRESHOLD {
+                println!("woke from sleep, reconnecting");
+                if let Err(e) = self.rebind(self.link().endpoint) {
+                    eprintln!("warning: {e}");
+                }
+            }
+            asleep = now_asleep;
             self.tick();
         }
     }
@@ -578,11 +669,13 @@ impl Tunnel {
     fn tick(&self) {
         let mut state = self.state.lock().unwrap();
         let now = Instant::now();
+        let mut gave_up = false;
 
         for expired in state.timers.expired(now) {
             match expired {
                 Expired::RetransmitHandshake => {
                     if state.timers.handshake_attempts > MAX_TIMER_HANDSHAKES {
+                        gave_up = true;
                         println!(
                             "handshake did not complete after {} attempts, giving up until there is traffic",
                             MAX_TIMER_HANDSHAKES + 2
@@ -599,6 +692,10 @@ impl Tunnel {
                         self.send_handshake(&mut state, true);
                     }
                 }
+                // A keepalive due in the same tick as a give-up would
+                // restage a packet and restart the handshakes. (Persistent
+                // keepalive is meant to keep retrying, so it still runs.)
+                Expired::SendKeepalive if gave_up => {}
                 Expired::SendKeepalive => {
                     self.send_keepalive(&mut state);
                     state.timers.keepalive_timer_handled(now);
@@ -646,6 +743,7 @@ mod link_state_tests {
             last_handshake: None,
             unanswered_since: None,
             unreplied_since: None,
+            heard_at: None,
             send_failing_since: None,
             offline: false,
             timers: Timers::new(None),
@@ -695,5 +793,60 @@ mod link_state_tests {
         // No network outranks an unanswered peer.
         state.offline = true;
         assert_eq!(state.link_state(), LinkState::Offline);
+    }
+
+    #[test]
+    fn full_send_queue_is_not_a_dead_link() {
+        let mut state = quiet();
+        let full: std::io::Result<usize> = Err(std::io::Error::from_raw_os_error(ENOBUFS));
+        assert!(!state.sent(&full, ago(2)), "not logged");
+        assert_eq!(state.send_failing_since, None);
+    }
+
+    #[test]
+    fn only_the_first_send_failure_is_logged() {
+        let mut state = quiet();
+        let failed = || -> std::io::Result<usize> { Err(std::io::Error::from(ErrorKind::NetworkUnreachable)) };
+        let first = ago(5);
+        assert!(state.sent(&failed(), first));
+        assert!(!state.sent(&failed(), Instant::now()));
+        assert_eq!(state.send_failing_since, Some(first), "the run keeps its start");
+        assert!(!state.sent(&Ok(32), Instant::now()));
+        assert!(state.sent(&failed(), Instant::now()), "a new run is logged again");
+    }
+
+    #[test]
+    fn uptime_clock_matches_instant_and_sleep_never_shrinks() {
+        // Instant must be CLOCK_UPTIME_RAW, or time_asleep measures the
+        // wrong thing.
+        let uptime = || {
+            let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+            assert_eq!(unsafe { clock_gettime(CLOCK_UPTIME_RAW, &mut ts) }, 0);
+            Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+        };
+        let (u0, i0, a0) = (uptime(), Instant::now(), time_asleep());
+        thread::sleep(Duration::from_millis(200));
+        let (u1, i1, a1) = (uptime(), Instant::now(), time_asleep());
+        let drift = (u1 - u0).abs_diff(i1 - i0);
+        assert!(drift < Duration::from_millis(5), "drift {drift:?}");
+        // CLOCK_MONOTONIC has microsecond granularity, so the difference
+        // jitters by tens of microseconds either way; far below the
+        // threshold.
+        assert!(a1 + Duration::from_millis(1) >= a0);
+        assert!(a1.saturating_sub(a0) < WAKE_THRESHOLD, "no wake while awake");
+    }
+
+    #[test]
+    fn link_gets_big_socket_buffers() {
+        unsafe extern "C" {
+            fn getsockopt(fd: i32, level: i32, name: i32, value: *mut u8, len: *mut u32) -> i32;
+        }
+        let link = Link::open("127.0.0.1:9".parse().unwrap()).unwrap();
+        for option in [SO_SNDBUF, SO_RCVBUF] {
+            let (mut size, mut len) = (0i32, 4u32);
+            let rc = unsafe { getsockopt(link.socket.as_raw_fd(), SOL_SOCKET, option, (&mut size as *mut i32).cast(), &mut len) };
+            assert_eq!(rc, 0);
+            assert_eq!(size, SOCKET_BUFFER, "option {option:#x}");
+        }
     }
 }

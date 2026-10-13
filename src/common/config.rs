@@ -184,7 +184,11 @@ fn parse_unresolved(text: &str) -> Result<(Config, String), String> {
             }
             ("peer", "allowedips") => allowed_ips.extend(parse_list(value, parse_cidr)?),
             ("peer", "persistentkeepalive") => {
-                keepalive_seconds = Some(value.parse().map_err(|_| format!("{}: bad keepalive", where_()))?)
+                // 0 and "off" disable it, as in wg(8).
+                keepalive_seconds = match value {
+                    "off" => None,
+                    _ => Some(value.parse::<u16>().map_err(|_| format!("{}: bad keepalive", where_()))?).filter(|&s| s != 0),
+                }
             }
             _ => eprintln!("warning: {}: ignoring '{}' in [{}]", where_(), key, section),
         }
@@ -294,6 +298,15 @@ PersistentKeepalive = 25
         assert_eq!(cfg.peer.allowed_ips[0].prefix, 0);
         assert_eq!(cfg.peer.keepalive_seconds, Some(25));
         assert_eq!(cfg.peer.preshared_key, [0u8; 32]);
+    }
+
+    #[test]
+    fn keepalive_zero_or_off_is_disabled() {
+        for value in ["0", "off"] {
+            let text = SAMPLE.replace("PersistentKeepalive = 25", &format!("PersistentKeepalive = {value}"));
+            assert_ne!(text, SAMPLE, "sample must set PersistentKeepalive = 25");
+            assert_eq!(parse(&text).unwrap().peer.keepalive_seconds, None, "{value}");
+        }
     }
 
     #[test]

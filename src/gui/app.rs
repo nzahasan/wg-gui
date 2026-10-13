@@ -22,6 +22,8 @@ use crate::storage::{self, Profile, Store};
 use crate::{format, screens, theme, tray};
 
 const TOAST_TIME: Duration = Duration::from_millis(2800);
+/// Stats requests that may fail in a row before the helper counts as gone.
+const MAX_STATS_FAILURES: u8 = 3;
 /// Dropping several files sends one event per file; wait this long for
 /// the rest before importing.
 const DROP_BATCH_DELAY: Duration = Duration::from_millis(80);
@@ -91,6 +93,8 @@ pub struct Active {
     pub history: History,
     pub stats: Stats,
     last_sample: Option<(Instant, Stats)>,
+    /// Stats requests that failed in a row.
+    stats_failures: u8,
 }
 
 impl Active {
@@ -642,6 +646,7 @@ impl App {
             history: History::default(),
             stats: Stats::default(),
             last_sample: None,
+            stats_failures: 0,
         });
         self.go(Screen::Connection);
 
@@ -775,6 +780,12 @@ impl App {
         };
         let stats = match result {
             Ok(stats) => stats,
+            // One slow reply is not a lost helper; dropping the client
+            // would make the helper stop a healthy tunnel.
+            Err(_) if active.stats_failures < MAX_STATS_FAILURES - 1 => {
+                active.stats_failures += 1;
+                return Task::none();
+            }
             Err(e) => {
                 // The helper died or restarted; the tunnel is gone with it.
                 self.connection.lock().unwrap().take();
@@ -793,6 +804,7 @@ impl App {
             active.history.push(rx, tx);
         }
         active.last_sample = Some((now, stats));
+        active.stats_failures = 0;
         active.stats = stats;
         let next = match active.status {
             Status::Connecting if stats.last_handshake.is_some() => Status::Connected,
