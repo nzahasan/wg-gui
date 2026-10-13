@@ -2,8 +2,12 @@
 # Builds wg-gui from this source tree and installs it on this Mac: the app
 # in /Applications, wg-cli on the PATH and wg-helper as a launchd daemon.
 # Installs what the build needs first, if it is missing: the Xcode Command
-# Line Tools, Homebrew and Rust (from Homebrew). Running it again upgrades
-# the install.
+# Line Tools, Homebrew and Rust (from Homebrew).
+#
+# Running it again upgrades the install: the whole app bundle is replaced
+# (binaries, Info.plist, signature and the helper's launchd plist must all
+# match), and everything outside it is kept: profiles, settings, the
+# wg-cli link. A connected VPN disconnects; the app reopens if it was open.
 #
 # Usage: scripts/install.sh
 #        scripts/install.sh --uninstall [--zap]
@@ -60,6 +64,9 @@ find_brew() {
 }
 
 daemon_loaded() { sudo launchctl print "system/$LABEL" >/dev/null 2>&1; }
+plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null; }
+# The app at $APP is ours: anything else with that name is not touched.
+app_is_ours() { [[ $(plist_value "$APP" CFBundleIdentifier) == "$BUNDLE_ID" ]]; }
 app_running() { pgrep -f "^$APP/Contents/MacOS/" >/dev/null; }
 
 # Quits the app and stops the helper; the helper restores DNS and routes
@@ -81,6 +88,11 @@ if command -v brew >/dev/null && brew list --cask wg-gui >/dev/null 2>&1; then
     exit 1
 fi
 
+if [[ -e $APP ]] && ! app_is_ours; then
+    echo "$APP is not wg-gui (bundle id '$(plist_value "$APP" CFBundleIdentifier)'); move it away first" >&2
+    exit 1
+fi
+
 if ((UNINSTALL)); then
     sudo -v
     echo "==> uninstalling wg-gui"
@@ -95,6 +107,21 @@ if ((UNINSTALL)); then
     fi
     echo "==> done; Homebrew and Rust are still installed"
     exit 0
+fi
+
+# What is installed now. A daemon plist with no app is a broken install,
+# which the upgrade path cleans up as well.
+NEW_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+NEW_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [[ -e $APP ]]; then
+    echo "==> upgrading wg-gui $(plist_value "$APP" CFBundleShortVersionString) to $NEW_VERSION ($NEW_COMMIT)"
+    UPGRADE=1
+elif [[ -e $DAEMON ]]; then
+    echo "==> found a wg-gui helper without its app; reinstalling"
+    UPGRADE=1
+else
+    echo "==> installing wg-gui $NEW_VERSION ($NEW_COMMIT)"
+    UPGRADE=0
 fi
 
 macos=$(sw_vers -productVersion)
@@ -136,15 +163,50 @@ echo "     $(rustc -V)"
 echo "==> building"
 packaging/macos/build-app.sh
 
+# Puts the previous app back, if it was moved aside, and restarts its
+# helper (the daemon plist is the same for both). Also right for a
+# failure before the swap: the helper was stopped and must run again.
+PREVIOUS=
+rollback() {
+    trap - ERR
+    if [[ -n $PREVIOUS && -d $PREVIOUS ]]; then
+        echo "==> putting the previous wg-gui back" >&2
+        if daemon_loaded; then sudo launchctl bootout "system/$LABEL" || true; fi
+        sudo rm -rf "$APP"
+        sudo mv "$PREVIOUS" "$APP"
+    fi
+    if [[ -e $APP && -e $DAEMON ]] && ! daemon_loaded; then
+        sudo launchctl bootstrap system "$DAEMON" || true
+    fi
+}
+
 sudo -v
-if [[ -e $APP ]] || daemon_loaded; then
-    echo "==> stopping the installed wg-gui"
+WAS_RUNNING=0
+if app_running; then WAS_RUNNING=1; fi
+if ((UPGRADE)) || daemon_loaded; then
+    echo "==> stopping the installed wg-gui (a connected VPN disconnects)"
     stop_all
-    sudo rm -rf "$APP" "$DAEMON" "$SOCKET"
+    # The daemon plist stays until it is replaced, so a rollback can
+    # start the previous helper with it.
+    sudo rm -f "$SOCKET"
 fi
+# From here on, any failure (set -e) restores what was there.
+trap rollback ERR
+
+# Unpacked next to the installed app (same volume, so the moves are
+# renames) and swapped in. The old app is kept until the new one works.
+sudo rm -rf /Applications/.wg-gui-install.* # left by an interrupted run
+STAGING=$(sudo mktemp -d /Applications/.wg-gui-install.XXXXXX)
+# mktemp makes it root-only (700); the checks below run as us.
+sudo chmod 755 "$STAGING"
+PREVIOUS=$STAGING/previous.app
+trap 'sudo rm -rf "$STAGING"' EXIT
+sudo ditto -x -k dist/wg-gui-*.zip "$STAGING"
+[[ -d $STAGING/wg-gui.app ]] || { echo "the build has no wg-gui.app" >&2; rollback; exit 1; }
 
 echo "==> installing $APP"
-sudo ditto -x -k dist/wg-gui-*.zip /Applications
+if [[ -e $APP ]]; then sudo mv "$APP" "$PREVIOUS"; fi
+sudo mv "$STAGING/wg-gui.app" "$APP" || { rollback; exit 1; }
 
 if [[ -z ${WG_TEAM_ID:-} ]]; then
     echo "==> starting wg-helper with launchd ($LABEL)"
@@ -163,7 +225,8 @@ if [[ -z ${WG_TEAM_ID:-} ]]; then
     for _ in $(seq 100); do [[ -S $SOCKET ]] && break; sleep 0.1; done
     if [[ ! -S $SOCKET ]]; then
         echo "the helper did not start:" >&2
-        sudo cat "$LOG" >&2
+        sudo tail -20 "$LOG" >&2
+        rollback
         exit 1
     fi
 
@@ -176,6 +239,8 @@ if [[ -z ${WG_TEAM_ID:-} ]]; then
     "$LSREGISTER" -f "$APP"
     echo "     unsigned build: the helper runs with --dev and accepts any local client"
 else
+    # An unsigned install's daemon would clash with the one the app registers.
+    sudo rm -f "$DAEMON"
     echo "==> the app registers its helper on first launch; allow it in"
     echo "     System Settings → General → Login Items & Extensions → Allow in the Background"
 fi
@@ -188,4 +253,10 @@ else
 fi
 
 rm -rf dist
-echo "==> installed; open wg-gui from /Applications (uninstall with: $0 --uninstall)"
+trap - ERR
+if ((WAS_RUNNING)); then open "$APP"; fi
+if ((UPGRADE)); then
+    echo "==> upgraded to $NEW_VERSION ($NEW_COMMIT); profiles and settings are unchanged"
+else
+    echo "==> installed; open wg-gui from /Applications (uninstall with: $0 --uninstall)"
+fi
