@@ -1,6 +1,6 @@
 [package]
 name = "wg-client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
@@ -45,6 +45,10 @@ block2 = { version = "0.6", optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSAppearance", "NSRunningApplication", "NSImage", "NSResponder", "NSWindow", "NSButton", "NSControl", "NSView", "NSColor", "NSColorSpace", "block2"] }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSArray", "NSString", "NSError", "NSUserDefaults", "NSNotification", "NSOperation", "block2"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
 
 # block 0.1.6 (via iced -> wgpu -> metal) declares an extern static of an
 # uninhabited type, which future Rust will reject. Use a copy with that fixed.

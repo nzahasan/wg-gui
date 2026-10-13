@@ -133,7 +133,10 @@ fn follow_network(control: TunnelControl, undo: Arc<Mutex<Undo>>, endpoint_text:
             path.gateway.as_deref().unwrap_or("-"),
             path.source.map_or("-".to_string(), |ip| ip.to_string())
         );
-        reconnect(&control, &undo, control.endpoint());
+        if !reconnect(&control, &undo, control.endpoint()) {
+            // Leave `last` alone so the next routing event tries again.
+            return;
+        }
 
         // The endpoint's name may resolve differently on the new network.
         // Looked up only now that the tunnel works again, since its DNS
@@ -150,11 +153,16 @@ fn follow_network(control: TunnelControl, undo: Arc<Mutex<Undo>>, endpoint_text:
     }
 }
 
-fn reconnect(control: &TunnelControl, undo: &Mutex<Undo>, endpoint: SocketAddr) {
+/// True if the tunnel now sends from a fresh socket.
+fn reconnect(control: &TunnelControl, undo: &Mutex<Undo>, endpoint: SocketAddr) -> bool {
     if let Err(e) = netconfig::repin_endpoint(&mut undo.lock().unwrap(), endpoint.ip()) {
         eprintln!("warning: cannot move the endpoint route: {e}");
     }
-    if let Err(e) = control.rebind(endpoint) {
-        eprintln!("warning: {e}");
+    match control.rebind(endpoint) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("warning: {e}");
+            false
+        }
     }
 }

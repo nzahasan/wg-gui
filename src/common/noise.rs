@@ -153,12 +153,16 @@ fn tai64n() -> [u8; 12] {
     out
 }
 
-/// 32 cryptographically random bytes from the kernel.
+unsafe extern "C" {
+    fn arc4random_buf(buf: *mut std::ffi::c_void, nbytes: usize);
+}
+
+/// 32 cryptographically random bytes. arc4random_buf cannot fail and
+/// needs no file descriptor, so it is safe under the tunnel's lock and
+/// cheap enough for per-packet timer jitter.
 pub fn random_bytes() -> [u8; 32] {
-    use std::io::Read;
     let mut bytes = [0u8; 32];
-    let mut urandom = std::fs::File::open("/dev/urandom").expect("/dev/urandom is readable");
-    urandom.read_exact(&mut bytes).expect("/dev/urandom never runs dry");
+    unsafe { arc4random_buf(bytes.as_mut_ptr().cast(), bytes.len()) };
     bytes
 }
 
@@ -487,5 +491,12 @@ mod tests {
         let nanos = u32::from_be_bytes(t[8..].try_into().unwrap());
         assert_eq!(nanos % (1 << 24), 0);
         assert!(u64::from_be_bytes(t[..8].try_into().unwrap()) > 1 << 62);
+    }
+
+    #[test]
+    fn random_bytes_are_random() {
+        let (a, b) = (random_bytes(), random_bytes());
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 32]);
     }
 }

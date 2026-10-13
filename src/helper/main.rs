@@ -21,7 +21,7 @@ use std::io::{BufReader, ErrorKind};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -29,6 +29,7 @@ use std::time::Duration;
 use wg_common::config;
 use wg_common::connection::Connection;
 use wg_common::ipc::{self, Request, Response, Started};
+use wg_common::netconfig;
 
 const SIGINT: c_int = 2;
 const SIGTERM: c_int = 15;
@@ -87,6 +88,9 @@ fn run() -> Result<(), String> {
         signal(SIGTERM, on_signal);
     }
 
+    // A helper that crashed or was killed may have left DNS and routes.
+    netconfig::recover();
+
     let listener = listen(&socket)?;
     eprintln!("wg-helper: listening on {}", socket.display());
 
@@ -97,16 +101,25 @@ fn run() -> Result<(), String> {
                 thread::spawn(move || serve(stream, requirement.as_deref()));
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(POLL_INTERVAL),
-            Err(e) => eprintln!("wg-helper: accept: {e}"),
+            Err(e) => {
+                eprintln!("wg-helper: accept: {e}");
+                thread::sleep(POLL_INTERVAL);
+            }
         }
     }
 
     eprintln!("wg-helper: shutting down");
-    if let Some((_, connection)) = TUNNEL.lock().unwrap().take() {
+    if let Some((_, connection)) = tunnel_slot().take() {
         connection.stop();
     }
     let _ = fs::remove_file(&socket);
     Ok(())
+}
+
+/// The tunnel slot. A panic while it was held must not stop shutdown or
+/// later clients from reaching the tunnel, so poisoning is ignored.
+fn tunnel_slot() -> MutexGuard<'static, Option<(u64, Connection)>> {
+    TUNNEL.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Binds the socket, replacing a stale one, and lets every user connect;
@@ -162,7 +175,7 @@ fn serve(stream: UnixStream, requirement: Option<&str>) {
     }
 
     // The client is gone: its tunnel goes with it.
-    let mut tunnel = TUNNEL.lock().unwrap();
+    let mut tunnel = tunnel_slot();
     if tunnel.as_ref().is_some_and(|(owner, _)| *owner == id) {
         let (_, connection) = tunnel.take().unwrap();
         eprintln!("wg-helper: client {id} left, stopping {}", connection.tun_name);
@@ -171,7 +184,7 @@ fn serve(stream: UnixStream, requirement: Option<&str>) {
 }
 
 fn handle(id: u64, request: Request) -> Response {
-    let mut tunnel = TUNNEL.lock().unwrap();
+    let mut tunnel = tunnel_slot();
     match request {
         Request::Up(text) => {
             match tunnel.take() {

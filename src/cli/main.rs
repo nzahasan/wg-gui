@@ -12,16 +12,34 @@ use std::time::Duration;
 use wg_common::config;
 use wg_common::connection::Connection;
 
+const SIGHUP: c_int = 1;
 const SIGINT: c_int = 2;
+const SIGQUIT: c_int = 3;
 const SIGTERM: c_int = 15;
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+const O_WRONLY: c_int = 1;
+
 unsafe extern "C" {
+    fn open(path: *const std::ffi::c_char, flags: c_int, ...) -> c_int;
+    fn dup2(from: c_int, to: c_int) -> c_int;
     fn signal(signum: c_int, handler: extern "C" fn(c_int)) -> usize;
 }
 
-extern "C" fn on_signal(_signum: c_int) {
+extern "C" fn on_signal(signum: c_int) {
+    if signum == SIGHUP {
+        // The terminal is gone: printing to it would fail, and Rust's
+        // print macros panic on that, skipping the cleanup. open and dup2
+        // are safe in a signal handler.
+        unsafe {
+            let null = open(c"/dev/null".as_ptr(), O_WRONLY);
+            if null >= 0 {
+                dup2(null, 1);
+                dup2(null, 2);
+            }
+        }
+    }
     STOP_REQUESTED.store(true, Ordering::SeqCst);
 }
 
@@ -40,9 +58,11 @@ fn main() {
 fn run(path: &str) -> Result<(), String> {
     let config = config::load(path)?;
 
+    // Closing the terminal (SIGHUP) must clean up like Ctrl-C does.
     unsafe {
-        signal(SIGINT, on_signal);
-        signal(SIGTERM, on_signal);
+        for signum in [SIGHUP, SIGINT, SIGQUIT, SIGTERM] {
+            signal(signum, on_signal);
+        }
     }
 
     let connection = Connection::start(config)?;

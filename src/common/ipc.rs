@@ -252,7 +252,12 @@ impl HelperClient {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        match self.call(&Request::Down, STOP_TIMEOUT)? {
+        let mut response = self.call(&Request::Down, STOP_TIMEOUT)?;
+        // Late replies to stats requests that timed out come first.
+        while let Response::Stats(_) = response {
+            response = read_response(&mut self.reader).map_err(|e| format!("helper: {e}"))?;
+        }
+        match response {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
@@ -354,5 +359,18 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(round_trip(&Response::Ok), Response::Ok));
+    }
+
+    #[test]
+    fn stop_skips_late_stats_replies() {
+        let (client_side, mut helper_side) = UnixStream::pair().unwrap();
+        let mut client = HelperClient { reader: BufReader::new(client_side.try_clone().unwrap()), writer: client_side };
+        // A stats reply that arrived after its request timed out, then
+        // the reply to DOWN.
+        write_response(&mut helper_side, &Response::Stats(Stats::default())).unwrap();
+        write_response(&mut helper_side, &Response::Ok).unwrap();
+        assert_eq!(client.stop(), Ok(()));
+        let request = read_request(&mut BufReader::new(helper_side)).unwrap();
+        assert!(matches!(request, Some(Request::Down)));
     }
 }
